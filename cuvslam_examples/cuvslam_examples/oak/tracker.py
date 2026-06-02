@@ -150,48 +150,34 @@ def _decode_oak_raw_depth(msg) -> "np.ndarray | None":
 
 
 def _load_rena_oak_cameras():
-    """Scan rena_bringup/config/config.yaml for all OAK cameras across all
-    robots, return a flat list of dicts:
+    """Read the single robot config at /etc/rena/config.yaml (written by
+    rena-commission) and return a flat list of its OAK cameras:
 
         [{"serial_no": str, "key": str, "robot_part": "base"|"arm",
           "image_mode": "raw"|"rect"|"alternate", "rect_calib": dict|None}, ...]
-
-    OAK serial numbers are globally unique across devices, so scanning all
-    robots in the file is safe. Pycuvslam runs on a specific robot but doesn't
-    need to know which one — the serial alone identifies the camera.
     """
-    import os
     import yaml
 
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        base = get_package_share_directory("rena_bringup")
-        config_path = os.path.join(base, "config", "config.yaml")
-    except Exception:
-        # Dev fallback when running outside a sourced ROS install.
-        config_path = "/mnt/jetson_data/rena-control/src/rena_bringup/config/config.yaml"
+    config_path = "/etc/rena/config.yaml"
 
     with open(config_path) as f:
-        data = yaml.safe_load(f) or {}
+        robot_cfg = yaml.safe_load(f) or {}
 
     out = []
-    for _robot_id, robot_cfg in data.items():
-        if not isinstance(robot_cfg, dict):
-            continue
-        for part in ("base", "arm"):
-            part_cfg = robot_cfg.get(part) or {}
-            for cam in part_cfg.get("cameras", []) or []:
-                if cam.get("type") != "oak":
-                    continue
-                out.append({
-                    "serial_no": cam.get("serial_no"),
-                    "key": cam.get("key"),
-                    "robot_part": part,
-                    "image_mode": cam.get("image_mode", "raw"),
-                    "rect_calib": cam.get("rect_calib"),
-                    "rig": cam.get("rig"),
-                    "stereo_extrinsic": cam.get("stereo_extrinsic"),
-                })
+    for part in ("base", "arm"):
+        part_cfg = robot_cfg.get(part) or {}
+        for cam in part_cfg.get("cameras", []) or []:
+            if cam.get("type") != "oak":
+                continue
+            out.append({
+                "serial_no": cam.get("serial_no"),
+                "key": cam.get("key"),
+                "robot_part": part,
+                "image_mode": cam.get("image_mode", "raw"),
+                "rect_calib": cam.get("rect_calib"),
+                "rig": cam.get("rig"),
+                "stereo_extrinsic": cam.get("stereo_extrinsic"),
+            })
     return out
 
 

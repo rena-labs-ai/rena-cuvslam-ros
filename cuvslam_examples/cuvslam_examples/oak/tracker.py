@@ -21,7 +21,7 @@ from cuvslam_examples.realsense.utils import Landmark, Pose
 # ---------- Local helpers for raw-image OAK stereo (no realsense dep) ----------
 
 def _oak_image_to_raw_camera_info_topic(image_topic: str) -> str:
-    """OAK raw convention: /oak_base_front/left/image_raw -> /oak_base_front/left/camera_info"""
+    """OAK raw convention: /base/front/left/image_raw -> /base/front/left/camera_info"""
     parent = image_topic.rsplit("/", 1)[0]
     return parent + "/camera_info"
 
@@ -105,7 +105,7 @@ def _rig_from_camera_from_robot_pose(rotation_cfg: dict, translation_cfg):
 
 
 def _oak_image_to_compressed_topic(image_topic: str) -> str:
-    """OAK images are recorded as compressed: /oak_base_front/left/image_raw/compressed"""
+    """OAK images are recorded as compressed: /base/front/left/image_raw/compressed"""
     return image_topic + "/compressed"
 
 
@@ -197,7 +197,7 @@ def _oak_topics_for_entry(entry: dict) -> tuple[str, str]:
     """Return (left_topic, right_topic) for a config.yaml OAK entry, using its
     image_mode to pick the image_raw / image_rect suffix."""
     suffix = f"image_{_oak_image_topic_suffix(entry['image_mode'])}"
-    ns = f"/oak_{entry['robot_part']}_{entry['key']}"
+    ns = f"/{entry['robot_part']}/{entry['key']}"
     # return f"{ns}/dot_off/left/{suffix}", f"{ns}/dot_off/right/{suffix}"
     return f"{ns}/left/{suffix}", f"{ns}/right/{suffix}"
 
@@ -585,8 +585,8 @@ class RosOakRGBDTracker(BaseTracker):
     """Single-OAK RGBD tracker (compressed RGB + compressedDepth).
 
     Topic convention (depthai_ros_driver_v3, oak_rect rgbd pipeline):
-      color: /oak_<part>_<key>/rgb/image_raw/compressed
-      depth: /oak_<part>_<key>/stereo/image_raw/compressedDepth
+      color: /<part>/<key>/rgb/image_raw/compressed
+      depth: /<part>/<key>/stereo/image_raw/compressedDepth
 
     Requires exactly one OAK in rena_bringup config.yaml; raises otherwise.
     Depth is uint16 millimeters by default (depth_scale=0.001).
@@ -606,7 +606,7 @@ class RosOakRGBDTracker(BaseTracker):
                 f"{oaks[0]['robot_part']}/{oaks[0]['key']})."
             )
         self._entry = oaks[0]
-        ns = f"/oak_{self._entry['robot_part']}_{self._entry['key']}"
+        ns = f"/{self._entry['robot_part']}/{self._entry['key']}"
         self._color_image_topic = f"{ns}/rgb/image_raw"
         self._depth_image_topic = f"{ns}/stereo/image_raw"
         self._color_topic = self._color_image_topic

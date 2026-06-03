@@ -66,7 +66,7 @@ ros2 launch rena_cuvslam_ros cuvslam.launch.py tracker:=ros_oak_stereo
 | ------------------ | -------------------- | ------------------------------------------------------ |
 | `tracker`          | `ros_oak_rgbd`       | `ros_oak_rgbd` or `ros_oak_stereo`                     |
 | `odom_topic`       | `/cuvslam/odometry`  | topic the odometry is published on                     |
-| `odom_child_frame` | `nav_base_link`      | `child_frame_id` of the published odometry             |
+| `odom_child_frame` | `base_camera_link`   | `child_frame_id` of the published odometry             |
 | `enable_plot`      | `false`              | also start `odom_logger` (see below)                   |
 | `ref_odom_topic`   | `/Odometry`          | reference odom for the plot (e.g. fast_lio)            |
 | `plot_out_path`    | `./outputs/vslam_plot.png` | output PNG path                                  |

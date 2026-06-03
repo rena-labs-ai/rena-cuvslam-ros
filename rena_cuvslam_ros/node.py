@@ -107,7 +107,7 @@ def main() -> None:
     param_node = Node("vslam")
     tracker_param = param_node.declare_parameter("tracker", "ros_oak_rgbd")
     odom_child_frame_param = param_node.declare_parameter(
-        "odom_child_frame", "nav_base_link"
+        "odom_child_frame", "base_camera_link"
     )
     tracker_type = str(tracker_param.value)
     odom_child_frame = str(odom_child_frame_param.value)

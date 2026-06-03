@@ -67,8 +67,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "odom_child_frame",
-                default_value="base_camera_link",
-                description="Odometry child_frame_id; match cuvslam_sync_base_camera_link.",
+                default_value="base_nav_link",
+                description="Odometry child_frame_id (robot nav center); match cuvslam_sync_base_nav_link.",
             ),
             DeclareLaunchArgument(
                 "enable_plot",

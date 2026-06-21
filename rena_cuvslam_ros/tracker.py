@@ -199,22 +199,6 @@ class _CameraInfoCollector:
         return all(v is not None for v in self.received.values())
 
 
-def _decode_compressed_depth(raw_bytes: bytes) -> Optional[np.ndarray]:
-    """Decode a ROS compressedDepth (PNG) message to a uint16 depth array.
-
-    ROS image_transport prepends a 12-byte config header before the PNG payload.
-    """
-    import cv2
-
-    HEADER_SIZE = 12
-    if len(raw_bytes) <= HEADER_SIZE:
-        return None
-    img = cv2.imdecode(
-        np.frombuffer(raw_bytes[HEADER_SIZE:], dtype=np.uint8), cv2.IMREAD_UNCHANGED
-    )
-    return img  # uint16, shape (H, W)
-
-
 def _spin_ros_node(node, tracker) -> None:
     import rclpy
 
@@ -257,7 +241,7 @@ def _make_oak_raw_camera(k, d, width: int, height: int, rig_from_camera_4x4) -> 
     return cam
 
 SLOP_SEC = 0.033
-QUEUE_SIZE = 100
+QUEUE_SIZE = 2
 
 
 # Rotation that maps robot body axes (x-fwd, y-left, z-up) into cuVSLAM
@@ -683,7 +667,7 @@ class RosOakStereoTracker(BaseTracker):
         self, tracker: vslam.Tracker, output_queue: queue.Queue, **kwargs
     ) -> None:
         import message_filters
-        from sensor_msgs.msg import CompressedImage
+        from sensor_msgs.msg import CompressedImage, Image
         from rclpy.node import Node
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -786,11 +770,14 @@ class RosOakStereoTracker(BaseTracker):
 
 
 class RosOakRGBDTracker(BaseTracker):
-    """Single-OAK RGBD tracker (compressed RGB + compressedDepth).
+    """Single-OAK RGBD tracker (compressed RGB + raw depth).
+
+    Color is consumed compressed (republished from raw by an image_transport
+    republish node in cuvslam.launch.py, so the driver stays raw-only).
 
     Topic convention (depthai_ros_driver_v3, oak_rect rgbd pipeline):
       color: /<part>/<key>/rgb/image_raw/compressed
-      depth: /<part>/<key>/stereo/image_raw/compressedDepth
+      depth: /<part>/<key>/stereo/image_raw
 
     Requires exactly one OAK in rena_bringup config.yaml; raises otherwise.
     Depth is uint16 millimeters by default (depth_scale=0.001).
@@ -814,7 +801,6 @@ class RosOakRGBDTracker(BaseTracker):
         self._color_image_topic = f"{ns}/rgb/image_raw"
         self._depth_image_topic = f"{ns}/stereo/image_raw"
         self._color_topic = f"{ns}/rgb/image_raw/compressed"
-        self._depth_topic = f"{ns}/stereo/image_raw/compressedDepth"
         self._depth_scale = depth_scale
         self._running = False
 
@@ -822,7 +808,7 @@ class RosOakRGBDTracker(BaseTracker):
             f"[ros_oak_rgbd] serial={self._entry['serial_no']} "
             f"{self._entry['robot_part']}/{self._entry['key']}\n"
             f"  color: {self._color_topic}\n"
-            f"  depth: {self._depth_topic}"
+            f"  depth: {self._depth_image_topic}"
         )
 
     @property
@@ -925,7 +911,7 @@ class RosOakRGBDTracker(BaseTracker):
         self, tracker: vslam.Tracker, output_queue: queue.Queue, **kwargs
     ) -> None:
         import message_filters
-        from sensor_msgs.msg import CompressedImage
+        from sensor_msgs.msg import CompressedImage, Image
         from rclpy.node import Node
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -934,7 +920,7 @@ class RosOakRGBDTracker(BaseTracker):
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,  # latest-only: drop stale frames instead of backlogging under load
         )
 
         # Per-stage diagnostic counters. Logged together every 1s so we can
@@ -990,12 +976,12 @@ class RosOakRGBDTracker(BaseTracker):
                 )
                 _log_diag(time.monotonic())
                 return
-            depth = _decode_compressed_depth(bytes(depth_msg.data))
+            depth = _decode_oak_raw_depth(depth_msg)
             if depth is None:
                 decode_fail[0] += 1
                 print(
                     f"[ros_oak_rgbd] depth decode failed "
-                    f"(format={depth_msg.format!r})",
+                    f"(encoding={getattr(depth_msg, 'encoding', None)!r})",
                     flush=True,
                 )
                 _log_diag(time.monotonic())
@@ -1047,11 +1033,13 @@ class RosOakRGBDTracker(BaseTracker):
             _log_diag(time.monotonic())
 
         self._node = Node("ros_oak_rgbd_frames")
+        # Color is compressed (JPEG), republished from raw by cuvslam.launch.py so the
+        # driver does no host encode. cuvslam decodes it here (grayscale features).
         color_sub = message_filters.Subscriber(
             self._node, CompressedImage, self._color_topic, qos_profile=qos
         )
         depth_sub = message_filters.Subscriber(
-            self._node, CompressedImage, self._depth_topic, qos_profile=qos
+            self._node, Image, self._depth_image_topic, qos_profile=qos
         )
         color_sub.registerCallback(_color_diag_cb)
         depth_sub.registerCallback(_depth_diag_cb)
@@ -1063,7 +1051,7 @@ class RosOakRGBDTracker(BaseTracker):
         print(
             f"[ros_oak_rgbd] Subscribed (ApproximateTimeSynchronizer "
             f"slop={SLOP_SEC*1000:.0f}ms): "
-            f"{self._color_topic}, {self._depth_topic}",
+            f"{self._color_topic}, {self._depth_image_topic} (RAW depth)",
             flush=True,
         )
 

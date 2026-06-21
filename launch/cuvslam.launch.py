@@ -13,6 +13,8 @@ from launch_ros.actions import Node
 def _launch_setup(context, *args, **kwargs):
     odom_topic = context.launch_configurations.get("odom_topic", "/cuvslam/odometry")
     enable_plot = context.launch_configurations.get("enable_plot", "false").lower() == "true"
+    color_raw_topic = context.launch_configurations.get(
+        "color_raw_topic", "/base/front/rgb/image_raw")
 
     actions = [
         Node(
@@ -27,7 +29,19 @@ def _launch_setup(context, *args, **kwargs):
                 }
             ],
             remappings=[("/cuvslam/odometry", odom_topic)],
-        )
+        ),
+        # NOTE(sean): when camera driver does not publish the compressed rgb
+        Node(
+            package="image_transport",
+            executable="republish",
+            name="rgb_compressor",
+            arguments=["raw", "compressed"],
+            remappings=[
+                ("in", color_raw_topic),
+                ("out/compressed", color_raw_topic + "/compressed"),
+            ],
+            output="screen",
+        ),
     ]
 
     if enable_plot:
@@ -69,6 +83,11 @@ def generate_launch_description():
                 "odom_child_frame",
                 default_value="base_nav_link",
                 description="Odometry child_frame_id (robot nav center); match cuvslam_sync_base_nav_link.",
+            ),
+            DeclareLaunchArgument(
+                "color_raw_topic",
+                default_value="/base/front/rgb/image_raw",
+                description="Raw rgb topic to compress for cuvslam (republished to <topic>/compressed).",
             ),
             DeclareLaunchArgument(
                 "enable_plot",

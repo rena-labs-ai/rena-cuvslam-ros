@@ -241,7 +241,7 @@ def _make_oak_raw_camera(k, d, width: int, height: int, rig_from_camera_4x4) -> 
     return cam
 
 SLOP_SEC = 0.033
-QUEUE_SIZE = 2
+QUEUE_SIZE = 20 #2
 
 
 # Rotation that maps robot body axes (x-fwd, y-left, z-up) into cuVSLAM
@@ -770,13 +770,12 @@ class RosOakStereoTracker(BaseTracker):
 
 
 class RosOakRGBDTracker(BaseTracker):
-    """Single-OAK RGBD tracker (compressed RGB + raw depth).
+    """Single-OAK RGBD tracker (raw RGB + raw depth).
 
-    Color is consumed compressed (republished from raw by an image_transport
-    republish node in cuvslam.launch.py, so the driver stays raw-only).
+    Color and depth are both consumed RAW (sensor_msgs/Image).
 
     Topic convention (depthai_ros_driver_v3, oak_rect rgbd pipeline):
-      color: /<part>/<key>/rgb/image_raw/compressed
+      color: /<part>/<key>/rgb/image_raw
       depth: /<part>/<key>/stereo/image_raw
 
     Requires exactly one OAK in rena_bringup config.yaml; raises otherwise.
@@ -800,14 +799,13 @@ class RosOakRGBDTracker(BaseTracker):
         ns = f"/{self._entry['robot_part']}/{self._entry['key']}"
         self._color_image_topic = f"{ns}/rgb/image_raw"
         self._depth_image_topic = f"{ns}/stereo/image_raw"
-        self._color_topic = f"{ns}/rgb/image_raw/compressed"
         self._depth_scale = depth_scale
         self._running = False
 
         print(
             f"[ros_oak_rgbd] serial={self._entry['serial_no']} "
             f"{self._entry['robot_part']}/{self._entry['key']}\n"
-            f"  color: {self._color_topic}\n"
+            f"  color: {self._color_image_topic}\n"
             f"  depth: {self._depth_image_topic}"
         )
 
@@ -911,7 +909,7 @@ class RosOakRGBDTracker(BaseTracker):
         self, tracker: vslam.Tracker, output_queue: queue.Queue, **kwargs
     ) -> None:
         import message_filters
-        from sensor_msgs.msg import CompressedImage, Image
+        from sensor_msgs.msg import Image
         from rclpy.node import Node
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -966,12 +964,12 @@ class RosOakRGBDTracker(BaseTracker):
                 return
             last_ts[0] = ts
 
-            color = _decode_oak_compressed_image(color_msg)
+            color = _decode_oak_raw_color(color_msg)
             if color is None:
                 decode_fail[0] += 1
                 print(
                     f"[ros_oak_rgbd] color decode failed "
-                    f"(format={color_msg.format!r})",
+                    f"(encoding={color_msg.encoding!r})",
                     flush=True,
                 )
                 _log_diag(time.monotonic())
@@ -1033,10 +1031,9 @@ class RosOakRGBDTracker(BaseTracker):
             _log_diag(time.monotonic())
 
         self._node = Node("ros_oak_rgbd_frames")
-        # Color is compressed (JPEG), republished from raw by cuvslam.launch.py so the
-        # driver does no host encode. cuvslam decodes it here (grayscale features).
+        # Raw rgb (sensor_msgs/Image), like the raw stereo depth.
         color_sub = message_filters.Subscriber(
-            self._node, CompressedImage, self._color_topic, qos_profile=qos
+            self._node, Image, self._color_image_topic, qos_profile=qos
         )
         depth_sub = message_filters.Subscriber(
             self._node, Image, self._depth_image_topic, qos_profile=qos
@@ -1051,7 +1048,8 @@ class RosOakRGBDTracker(BaseTracker):
         print(
             f"[ros_oak_rgbd] Subscribed (ApproximateTimeSynchronizer "
             f"slop={SLOP_SEC*1000:.0f}ms): "
-            f"{self._color_topic}, {self._depth_image_topic} (RAW depth)",
+            f"{self._color_image_topic} (RAW color), "
+            f"{self._depth_image_topic} (RAW depth)",
             flush=True,
         )
 

@@ -5,9 +5,13 @@ Supports the OAK trackers: RosOakStereoTracker and RosOakRGBDTracker. Image
 topics are derived inside the tracker from /etc/rena/config.yaml
 (serial + image_mode -> image_raw | image_rect).
 
-Publishes only Odometry (no TF). Stamps match the tracker pipeline timestamp
-(synced left header time from ApproximateTimeSynchronizer). This module holds
-all ROS wiring; tracking logic lives in tracker.py / pipeline.py.
+Publishes raw 6-DOF Odometry on /cuvslam/odometry AND broadcasts the
+odom -> base_nav_link TF (planarized) directly, plus the static map -> odom.
+Stamps match the tracker pipeline timestamp (synced left header time from
+ApproximateTimeSynchronizer), which is the stamp nvblox looks up at depth time,
+so owning the TF here avoids a separate node re-subscribing to the odom topic
+just to re-emit it. This module holds all ROS wiring; tracking logic lives in
+tracker.py / pipeline.py.
 """
 
 import math
@@ -26,9 +30,11 @@ from geometry_msgs.msg import (
     Pose,
     PoseWithCovariance,
     Quaternion,
+    TransformStamped,
     TwistWithCovariance,
 )
 from nav_msgs.msg import Odometry
+from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 from .pipeline import Pipeline
 from .plot import compute_ate, plot_combined
@@ -59,16 +65,40 @@ def _make_tracker(tracker_type: str):
 
 
 class VslamNode(Node):
-    def __init__(self, tracker, child_frame: str) -> None:
+    def __init__(
+        self,
+        tracker,
+        child_frame: str,
+        planarize: bool = True,
+        map_frame: str = "map",
+    ) -> None:
         super().__init__("vslam")
         self._child_frame = child_frame
+        self._planarize = planarize
         self._odom_pub = self.create_publisher(Odometry, ODOM_TOPIC, 10)
+
+        # cuVSLAM owns the odom -> child_frame TF directly: the pose and the
+        # stereo-left stamp are already in this loop, so broadcasting here avoids
+        # a separate node round-tripping /cuvslam/odometry just to re-emit it as
+        # TF. The odometry TOPIC stays raw 6-DOF; only the TF is planarized (zero
+        # VSLAM roll/pitch -- mount tilt lives in the static base_nav_link ->
+        # camera rig TF, so stock nvblox integrates at the calibrated pose).
+        self._tf_broadcaster = TransformBroadcaster(self)
+        self._static_broadcaster = StaticTransformBroadcaster(self)
+        st = TransformStamped()
+        st.header.stamp = self.get_clock().now().to_msg()
+        st.header.frame_id = map_frame
+        st.child_frame_id = ODOM_FRAME
+        st.transform.rotation.w = 1.0
+        self._static_broadcaster.sendTransform(st)
+
         self._pipeline = Pipeline(tracker)
         self._pipeline.start()
 
+        mode = "PLANAR (yaw only)" if planarize else "full 6-DOF"
         self.get_logger().info(
-            f"Publishing odometry only on {ODOM_TOPIC} "
-            f"(child_frame={child_frame}, no TF)"
+            f"Publishing odometry on {ODOM_TOPIC} (raw 6-DOF) + TF "
+            f"{ODOM_FRAME}->{child_frame} [{mode}]; static {map_frame}->{ODOM_FRAME}"
         )
         self._thread = threading.Thread(target=self._tracking_loop, daemon=True)
         self._thread.start()
@@ -96,6 +126,30 @@ class VslamNode(Node):
             msg.twist = TwistWithCovariance()
             self._odom_pub.publish(msg)
 
+            # Same pose as TF at the same stamp. Topic stays raw 6-DOF above;
+            # planarize only the TF (r is [x, y, z, w]).
+            ts = TransformStamped()
+            ts.header.stamp = stamp
+            ts.header.frame_id = ODOM_FRAME
+            ts.child_frame_id = self._child_frame
+            ts.transform.translation.x = float(t[0])
+            ts.transform.translation.y = float(t[1])
+            ts.transform.translation.z = float(t[2])
+            if self._planarize:
+                yaw = math.atan2(
+                    2.0 * (r[3] * r[2] + r[0] * r[1]),
+                    1.0 - 2.0 * (r[1] * r[1] + r[2] * r[2]),
+                )
+                half = 0.5 * yaw
+                ts.transform.rotation.z = math.sin(half)
+                ts.transform.rotation.w = math.cos(half)
+            else:
+                ts.transform.rotation.x = float(r[0])
+                ts.transform.rotation.y = float(r[1])
+                ts.transform.rotation.z = float(r[2])
+                ts.transform.rotation.w = float(r[3])
+            self._tf_broadcaster.sendTransform(ts)
+
     def destroy_node(self) -> None:
         self._pipeline.stop()
         super().destroy_node()
@@ -109,15 +163,24 @@ def main() -> None:
     odom_child_frame_param = param_node.declare_parameter(
         "odom_child_frame", "base_nav_link"
     )
+    planarize_param = param_node.declare_parameter("planarize", True)
+    map_frame_param = param_node.declare_parameter("map_frame", "map")
     tracker_type = str(tracker_param.value)
     odom_child_frame = str(odom_child_frame_param.value)
+    planarize = bool(planarize_param.value)
+    map_frame = str(map_frame_param.value)
     param_node.destroy_node()
 
     # OAK topics are derived from /etc/rena/config.yaml inside the tracker
     # (serial + image_mode -> image_raw | image_rect).
     tracker = _make_tracker(tracker_type)
 
-    node = VslamNode(tracker, child_frame=odom_child_frame)
+    node = VslamNode(
+        tracker,
+        child_frame=odom_child_frame,
+        planarize=planarize,
+        map_frame=map_frame,
+    )
     try:
         while rclpy.ok():
             time.sleep(0.1)

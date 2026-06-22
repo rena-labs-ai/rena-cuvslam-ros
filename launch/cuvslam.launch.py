@@ -13,8 +13,10 @@ from launch_ros.actions import Node
 def _launch_setup(context, *args, **kwargs):
     odom_topic = context.launch_configurations.get("odom_topic", "/cuvslam/odometry")
     enable_plot = context.launch_configurations.get("enable_plot", "false").lower() == "true"
-    color_raw_topic = context.launch_configurations.get(
-        "color_raw_topic", "/base/front/rgb/image_raw")
+    # Python bool (not a LaunchConfiguration string) so the node's bool param
+    # override type-matches its declared default.
+    planarize = context.launch_configurations.get(
+        "planarize", "true").strip().lower() in ("1", "true", "yes", "on")
 
     actions = [
         Node(
@@ -26,21 +28,10 @@ def _launch_setup(context, *args, **kwargs):
                 {
                     "tracker": LaunchConfiguration("tracker"),
                     "odom_child_frame": LaunchConfiguration("odom_child_frame"),
+                    "planarize": planarize,
                 }
             ],
             remappings=[("/cuvslam/odometry", odom_topic)],
-        ),
-        # NOTE(sean): when camera driver does not publish the compressed rgb
-        Node(
-            package="image_transport",
-            executable="republish",
-            name="rgb_compressor",
-            arguments=["raw", "compressed"],
-            remappings=[
-                ("in", color_raw_topic),
-                ("out/compressed", color_raw_topic + "/compressed"),
-            ],
-            output="screen",
         ),
     ]
 
@@ -82,12 +73,16 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "odom_child_frame",
                 default_value="base_nav_link",
-                description="Odometry child_frame_id (robot nav center); match cuvslam_sync_base_nav_link.",
+                description="Odometry child_frame_id (robot nav center) and the "
+                "odom -> child TF child frame; nav2's robot_base_frame.",
             ),
             DeclareLaunchArgument(
-                "color_raw_topic",
-                default_value="/base/front/rgb/image_raw",
-                description="Raw rgb topic to compress for cuvslam (republished to <topic>/compressed).",
+                "planarize",
+                default_value="true",
+                description="Planar mode for the published TF: zero VSLAM "
+                "roll/pitch on odom -> base_nav_link (mount tilt comes from the "
+                "rig TF). The /cuvslam/odometry topic stays raw 6-DOF either way. "
+                "Set false for raw 6-DOF TF passthrough.",
             ),
             DeclareLaunchArgument(
                 "enable_plot",

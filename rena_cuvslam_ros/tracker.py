@@ -241,7 +241,7 @@ def _make_oak_raw_camera(k, d, width: int, height: int, rig_from_camera_4x4) -> 
     return cam
 
 SLOP_SEC = 0.033
-QUEUE_SIZE = 20 #2
+QUEUE_SIZE = 2
 
 
 # Rotation that maps robot body axes (x-fwd, y-left, z-up) into cuVSLAM
@@ -791,8 +791,7 @@ class RosOakRGBDTracker(BaseTracker):
 
     def __init__(self, depth_scale: float = 0.001, debug: bool = False) -> None:
         self._debug = debug
-        # nvblox + SLAM run off the base rig, so the RGBD rig is the base OAKs;
-        # arm OAKs (if any) are out of scope here.
+
         oaks = [o for o in _load_rena_oak_cameras() if o["robot_part"] == "base"]
         if not oaks:
             raise RuntimeError(
@@ -865,7 +864,6 @@ class RosOakRGBDTracker(BaseTracker):
         scale_factor = 1.0 / self._depth_scale
 
         if len(self._entries) == 1:
-            # Single camera: legacy single-depth fields (unchanged behaviour).
             rgbd_settings.depth_scale_factor = scale_factor
             rgbd_settings.depth_camera_id = 0
         else:
@@ -952,10 +950,7 @@ class RosOakRGBDTracker(BaseTracker):
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            # Single cam: latest-only (drop stale instead of backlogging). Multi
-            # cam: give the cross-camera synchronizer a few frames of slack so it
-            # can pair streams that arrive slightly skewed.
-            depth=1 if n == 1 else 10,
+            depth=1,
         )
 
         # Track-latency budget, logged every 1s. We have a ~33ms frame budget
@@ -989,8 +984,6 @@ class RosOakRGBDTracker(BaseTracker):
                 last_log_time[0] = now
 
         def on_rgbd(*msgs):
-            # Subscribers are registered [color0, depth0, color1, depth1, ...],
-            # so the synchronized tuple interleaves the same way.
             color_msgs = msgs[0::2]
             depth_msgs = msgs[1::2]
             ts = (
@@ -1045,7 +1038,7 @@ class RosOakRGBDTracker(BaseTracker):
             )
 
         self._node = Node("ros_oak_rgbd_frames")
-        # Raw rgb + raw depth (sensor_msgs/Image), one pair per camera.
+
         subscribers = []
         topics_log: List[str] = []
         for entry in self._entries:

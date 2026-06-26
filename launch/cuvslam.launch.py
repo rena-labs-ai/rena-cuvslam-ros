@@ -13,13 +13,8 @@ from launch_ros.actions import Node
 def _launch_setup(context, *args, **kwargs):
     odom_topic = context.launch_configurations.get("odom_topic", "/cuvslam/odometry")
     enable_plot = context.launch_configurations.get("enable_plot", "false").lower() == "true"
-    # Python bool (not a LaunchConfiguration string) so the node's bool param
-    # override type-matches its declared default.
     planarize = context.launch_configurations.get(
         "planarize", "true").strip().lower() in ("1", "true", "yes", "on")
-    # Reuse the global log_level (rena start --debug sets it to "debug") as the
-    # gate for the per-second tracker diagnostics. Python bool so it type-matches
-    # the node's declared bool default.
     debug = context.launch_configurations.get(
         "log_level", "info").strip().lower() == "debug"
 

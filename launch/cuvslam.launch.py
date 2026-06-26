@@ -17,6 +17,11 @@ def _launch_setup(context, *args, **kwargs):
     # override type-matches its declared default.
     planarize = context.launch_configurations.get(
         "planarize", "true").strip().lower() in ("1", "true", "yes", "on")
+    # Reuse the global log_level (rena start --debug sets it to "debug") as the
+    # gate for the per-second tracker diagnostics. Python bool so it type-matches
+    # the node's declared bool default.
+    debug = context.launch_configurations.get(
+        "log_level", "info").strip().lower() == "debug"
 
     actions = [
         Node(
@@ -29,6 +34,7 @@ def _launch_setup(context, *args, **kwargs):
                     "tracker": LaunchConfiguration("tracker"),
                     "odom_child_frame": LaunchConfiguration("odom_child_frame"),
                     "planarize": planarize,
+                    "debug": debug,
                 }
             ],
             remappings=[("/cuvslam/odometry", odom_topic)],
@@ -83,6 +89,12 @@ def generate_launch_description():
                 "roll/pitch on odom -> base_nav_link (mount tilt comes from the "
                 "rig TF). The /cuvslam/odometry topic stays raw 6-DOF either way. "
                 "Set false for raw 6-DOF TF passthrough.",
+            ),
+            DeclareLaunchArgument(
+                "log_level",
+                default_value="info",
+                description="Global ROS log level; 'debug' enables the "
+                "per-second tracker diagnostics log.",
             ),
             DeclareLaunchArgument(
                 "enable_plot",

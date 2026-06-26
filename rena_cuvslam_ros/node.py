@@ -51,12 +51,12 @@ def _stamp_from_ns(timestamp_ns: int) -> Time:
     return t
 
 
-def _make_tracker(tracker_type: str):
+def _make_tracker(tracker_type: str, debug: bool = False):
     match tracker_type:
         case "ros_oak_stereo":
-            return RosOakStereoTracker()
+            return RosOakStereoTracker(debug=debug)
         case "ros_oak_rgbd":
-            return RosOakRGBDTracker()
+            return RosOakRGBDTracker(debug=debug)
         case _:
             raise ValueError(
                 f"Unknown tracker type: {tracker_type!r}; "
@@ -165,15 +165,17 @@ def main() -> None:
     )
     planarize_param = param_node.declare_parameter("planarize", True)
     map_frame_param = param_node.declare_parameter("map_frame", "map")
+    debug_param = param_node.declare_parameter("debug", False)
     tracker_type = str(tracker_param.value)
     odom_child_frame = str(odom_child_frame_param.value)
     planarize = bool(planarize_param.value)
     map_frame = str(map_frame_param.value)
+    debug = bool(debug_param.value)
     param_node.destroy_node()
 
     # OAK topics are derived from /etc/rena/config.yaml inside the tracker
     # (serial + image_mode -> image_raw | image_rect).
-    tracker = _make_tracker(tracker_type)
+    tracker = _make_tracker(tracker_type, debug=debug)
 
     node = VslamNode(
         tracker,

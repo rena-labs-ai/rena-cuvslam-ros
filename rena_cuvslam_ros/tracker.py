@@ -404,7 +404,8 @@ class RosOakStereoTracker(BaseTracker):
         [cam0_left, cam0_right, cam1_left, cam1_right, ...]
     """
 
-    def __init__(self) -> None:
+    def __init__(self, debug: bool = False) -> None:
+        self._debug = debug
         oaks = _load_rena_oak_cameras()
         if not oaks:
             raise RuntimeError(
@@ -710,7 +711,7 @@ class RosOakStereoTracker(BaseTracker):
 
             frames_fed[0] += 1
             now = time.monotonic()
-            if now - last_log_time[0] >= 1.0:
+            if self._debug and now - last_log_time[0] >= 1.0:
                 print(
                     f"[ros_oak_stereo] fed={frames_fed[0]}/s  "
                     f"decode={decode_ms:.1f}ms  track={track_ms:.1f}ms",
@@ -770,86 +771,117 @@ class RosOakStereoTracker(BaseTracker):
 
 
 class RosOakRGBDTracker(BaseTracker):
-    """Single-OAK RGBD tracker (raw RGB + raw depth).
+    """OAK RGBD tracker (raw RGB + raw depth) — single or multi-camera.
 
-    Color and depth are both consumed RAW (sensor_msgs/Image).
+    The number of base OAK cameras in /etc/rena/config.yaml selects the mode:
+    one camera keeps the classic single-RGBD odometry; two or more enable
+    cuVSLAM multi-depth ICP (cuVSLAM#3), fusing every camera's depth track.
 
-    Topic convention (depthai_ros_driver_v3, oak_rect rgbd pipeline):
-      color: /<part>/<key>/rgb/image_raw
-      depth: /<part>/<key>/stereo/image_raw
+    Each base OAK contributes one RGB-D stream; color and depth are both
+    consumed RAW (sensor_msgs/Image):
+      color: /base/<key>/rgb/image_raw
+      depth: /base/<key>/stereo/image_raw
 
-    Requires exactly one OAK in rena_bringup config.yaml; raises otherwise.
-    Depth is uint16 millimeters by default (depth_scale=0.001).
+    Per-camera rig extrinsics come from each entry's ``rig:`` block (robot body
+    frame, x-fwd/y-left/z-up), rebased into cuVSLAM's optical rig convention.
+    Frames are fed to track() as images=[color0, color1, ...],
+    depths=[depth0, depth1, ...]. Depth is uint16 millimeters by default
+    (depth_scale=0.001).
     """
 
-    def __init__(self, depth_scale: float = 0.001) -> None:
-        oaks = _load_rena_oak_cameras()
+    def __init__(self, depth_scale: float = 0.001, debug: bool = False) -> None:
+        self._debug = debug
+        # nvblox + SLAM run off the base rig, so the RGBD rig is the base OAKs;
+        # arm OAKs (if any) are out of scope here.
+        oaks = [o for o in _load_rena_oak_cameras() if o["robot_part"] == "base"]
         if not oaks:
             raise RuntimeError(
-                "RosOakRGBDTracker: no OAK in rena_bringup config.yaml."
+                "RosOakRGBDTracker: no base OAK camera in /etc/rena/config.yaml."
             )
-        if len(oaks) > 1:
-            print(
-                f"[ros_oak_rgbd] WARN {len(oaks)} OAKs in config "
-                f"{[o['serial_no'] for o in oaks]}; RGBD is single-camera, "
-                f"using first ({oaks[0]['serial_no']} "
-                f"{oaks[0]['robot_part']}/{oaks[0]['key']})."
-            )
-        self._entry = oaks[0]
-        ns = f"/{self._entry['robot_part']}/{self._entry['key']}"
-        self._color_image_topic = f"{ns}/rgb/image_raw"
-        self._depth_image_topic = f"{ns}/stereo/image_raw"
+        self._entries = oaks
         self._depth_scale = depth_scale
         self._running = False
 
-        print(
-            f"[ros_oak_rgbd] serial={self._entry['serial_no']} "
-            f"{self._entry['robot_part']}/{self._entry['key']}\n"
-            f"  color: {self._color_image_topic}\n"
-            f"  depth: {self._depth_image_topic}"
-        )
+        for e in self._entries:
+            ns = f"/{e['robot_part']}/{e['key']}"
+            e["color_topic"] = f"{ns}/rgb/image_raw"
+            e["depth_topic"] = f"{ns}/stereo/image_raw"
+
+        n = len(self._entries)
+        print(f"[ros_oak_rgbd] mode={'MULTI' if n > 1 else 'SINGLE'}  N={n}")
+        for i, e in enumerate(self._entries):
+            print(
+                f"  cam{i}: serial={e['serial_no']} {e['robot_part']}/{e['key']}\n"
+                f"    color: {e['color_topic']}\n"
+                f"    depth: {e['depth_topic']}"
+            )
 
     @property
     def num_viz_cameras(self) -> int:
-        return 1
+        return len(self._entries)
 
     def get_viz_image_indices(self) -> List[int]:
-        return [0]
+        return list(range(len(self._entries)))
 
     def get_viz_observation_indices(self) -> List[int]:
-        return [0]
+        return list(range(len(self._entries)))
 
     def setup_camera_parameters(self) -> Dict[str, Dict]:
         import rclpy
         from rclpy.node import Node
         from sensor_msgs.msg import CameraInfo
 
-        color_info_topic = _oak_image_to_raw_camera_info_topic(self._color_image_topic)
-        print(f"[ros_oak_rgbd] Waiting for CameraInfo on {color_info_topic} ...")
-
-        collector = _CameraInfoCollector(["color"])
+        keys = [f"cam{i}_color" for i in range(len(self._entries))]
+        collector = _CameraInfoCollector(keys)
         node = Node("ros_oak_rgbd_camera_info")
-        node.create_subscription(
-            CameraInfo, color_info_topic, partial(collector.on_info, "color"), 10
-        )
+        for i, entry in enumerate(self._entries):
+            info_topic = _oak_image_to_raw_camera_info_topic(entry["color_topic"])
+            print(f"[ros_oak_rgbd] Waiting for CameraInfo on {info_topic} ...")
+            node.create_subscription(
+                CameraInfo, info_topic, partial(collector.on_info, f"cam{i}_color"), 10
+            )
 
         deadline = time.time() + 30.0
         while not collector.has_all() and time.time() < deadline:
             rclpy.spin_once(node, timeout_sec=0.5)
         node.destroy_node()
 
-        if collector.received["color"] is None:
+        missing = [k for k, v in collector.received.items() if v is None]
+        if missing:
             raise TimeoutError(
-                f"Did not receive CameraInfo on {color_info_topic} within 30 s"
+                f"Did not receive CameraInfo for {missing} within 30 s"
             )
-        print("[ros_oak_rgbd] CameraInfo received")
-        return {"color_msg": collector.received["color"]}
+        print("[ros_oak_rgbd] CameraInfo received for all cameras")
+        return {
+            "color_msgs": [
+                collector.received[f"cam{i}_color"]
+                for i in range(len(self._entries))
+            ]
+        }
 
     def create_odometry_config(self) -> vslam.Tracker.OdometryConfig:
         rgbd_settings = vslam.Tracker.OdometryRGBDSettings()
-        rgbd_settings.depth_scale_factor = 1.0 / self._depth_scale
-        rgbd_settings.depth_camera_id = 0
         rgbd_settings.enable_depth_stereo_tracking = False
+        scale_factor = 1.0 / self._depth_scale
+
+        if len(self._entries) == 1:
+            # Single camera: legacy single-depth fields (unchanged behaviour).
+            rgbd_settings.depth_scale_factor = scale_factor
+            rgbd_settings.depth_camera_id = 0
+        else:
+            # Multi camera: one depth source per rig camera (cuVSLAM#3).
+            try:
+                DepthCam = vslam.Tracker.OdometryRGBDDepthCameraSettings
+            except AttributeError as e:
+                raise RuntimeError(
+                    "Multi-camera RGBD needs the rena cuVSLAM build with "
+                    "multi-depth ICP (cuVSLAM#3, feat/add-multi-depth-icp); the "
+                    "installed cuvslam lacks OdometryRGBDDepthCameraSettings."
+                ) from e
+            rgbd_settings.depth_cameras = [
+                DepthCam(camera_id=i, depth_scale_factor=scale_factor)
+                for i in range(len(self._entries))
+            ]
 
         return vslam.Tracker.OdometryConfig(
             async_sba=True,
@@ -866,43 +898,44 @@ class RosOakRGBDTracker(BaseTracker):
     def create_rig(self, camera_params: dict) -> vslam.Rig:
         import numpy as np
 
-        rig_cfg = self._entry.get("rig") or {}
-        rig_from_color = _rig_from_camera_from_robot_pose(
-            rig_cfg.get("rotation"),
-            rig_cfg.get("translation"),
-        )
-
-        msg = camera_params["color_msg"]
-        cam = _make_oak_raw_camera(
-            k=msg.k, d=msg.d,
-            width=msg.width, height=msg.height,
-            rig_from_camera_4x4=rig_from_color,
-        )
-
-        # Calibration dump — same format as RosOakStereoTracker.create_rig.
         np.set_printoptions(precision=6, suppress=True)
-        label = f"{self._entry['robot_part']}/{self._entry['key']}"
-        K = np.asarray(list(msg.k), dtype=np.float64).reshape(3, 3)
-        D = np.asarray(
-            [float(msg.d[i]) if i < len(msg.d) else 0.0 for i in range(8)],
-            dtype=np.float64,
-        )
-        rfc_t = np.asarray(cam.rig_from_camera.translation)
-        rfc_q = np.asarray(cam.rig_from_camera.rotation)
-        print()
-        print(f"--- [ros_oak_rgbd] {label} COLOR (CAM_A) ---")
-        print(f"size = {cam.size}")
-        print(f"focal = {cam.focal}")
-        print(f"principal = {cam.principal}")
-        print(f"K =\n{K}")
-        print(f"D (8) = {D}")
-        print(f"distortion model = {cam.distortion.model}")
-        print(f"rig_from_camera.translation [m] = {rfc_t}")
-        print(f"rig_from_camera.rotation (qx,qy,qz,qw) = {rfc_q}")
-        print()
+        cameras: List[vslam.Camera] = []
+        for entry, msg in zip(self._entries, camera_params["color_msgs"]):
+            rig_cfg = entry.get("rig") or {}
+            rig_from_color = _rig_from_camera_from_robot_pose(
+                rig_cfg.get("rotation"),
+                rig_cfg.get("translation"),
+            )
+            cam = _make_oak_raw_camera(
+                k=msg.k, d=msg.d,
+                width=msg.width, height=msg.height,
+                rig_from_camera_4x4=rig_from_color,
+            )
+            cameras.append(cam)
+
+            # Calibration dump — same format as RosOakStereoTracker.create_rig.
+            label = f"{entry['robot_part']}/{entry['key']}"
+            K = np.asarray(list(msg.k), dtype=np.float64).reshape(3, 3)
+            D = np.asarray(
+                [float(msg.d[i]) if i < len(msg.d) else 0.0 for i in range(8)],
+                dtype=np.float64,
+            )
+            rfc_t = np.asarray(cam.rig_from_camera.translation)
+            rfc_q = np.asarray(cam.rig_from_camera.rotation)
+            print()
+            print(f"--- [ros_oak_rgbd] {label} COLOR (CAM_A) ---")
+            print(f"size = {cam.size}")
+            print(f"focal = {cam.focal}")
+            print(f"principal = {cam.principal}")
+            print(f"K =\n{K}")
+            print(f"D (8) = {D}")
+            print(f"distortion model = {cam.distortion.model}")
+            print(f"rig_from_camera.translation [m] = {rfc_t}")
+            print(f"rig_from_camera.rotation (qx,qy,qz,qw) = {rfc_q}")
+            print()
 
         rig = vslam.Rig()
-        rig.cameras = [cam]
+        rig.cameras = cameras
         return rig
 
     def start_streaming(
@@ -914,93 +947,89 @@ class RosOakRGBDTracker(BaseTracker):
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
         self._running = True
+        n = len(self._entries)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1,  # latest-only: drop stale frames instead of backlogging under load
+            # Single cam: latest-only (drop stale instead of backlogging). Multi
+            # cam: give the cross-camera synchronizer a few frames of slack so it
+            # can pair streams that arrive slightly skewed.
+            depth=1 if n == 1 else 10,
         )
 
-        # Per-stage diagnostic counters. Logged together every 1s so we can
-        # see where the pipeline gets stuck:
-        #   color/s, depth/s   = arrivals on each topic (independent of sync)
-        #   sync/s             = ApproximateTimeSynchronizer match rate
-        #   decode_fail/s      = color or depth decode returned None
-        #   track_fail/s       = tracker.track() returned None pose
-        #   fed/s              = successful samples pushed to output queue
-        # Plus last-track latency (track_ms) and worst track since last log.
-        color_n     = [0]
-        depth_n     = [0]
-        sync_n      = [0]
-        decode_fail = [0]
-        track_fail  = [0]
-        fed_n       = [0]
-        track_ms_max = [0.0]
+        # Track-latency budget, logged every 1s. We have a ~33ms frame budget
+        # (30 fps) to run tracker.track() and publish odometry on the single
+        # spin thread. The only thing reported is: of the frames fed to track()
+        # in the last second, how many stayed within budget vs blew past it,
+        # and how much wall time the over-budget ones cost. That over-budget
+        # wall time is exactly what's stolen from capturing the next frames,
+        # since track() blocks this thread.
+        #   track/s   = frames fed to tracker.track()
+        #   <=33ms    = tracks within the frame budget
+        #   >33ms     = tracks over budget
+        #   sum       = accumulated wall time of the over-budget tracks
+        BUDGET_MS = 1000.0 / 30.0  # ~33.3ms, one 30fps frame
+        track_n  = [0]
+        on_n     = [0]
+        over_n   = [0]
+        over_ms  = [0.0]
         last_log_time = [time.monotonic()]
         last_ts = [0]
-        last_track_ms = [0.0]
 
         def _log_diag(now):
-            if now - last_log_time[0] >= 1.0:
+            if self._debug and now - last_log_time[0] >= 1.0:
                 print(
-                    f"[ros_oak_rgbd] color={color_n[0]}/s  depth={depth_n[0]}/s  "
-                    f"sync={sync_n[0]}/s  decode_fail={decode_fail[0]}  "
-                    f"track_fail={track_fail[0]}  fed={fed_n[0]}/s  "
-                    f"track={last_track_ms[0]:.1f}ms (peak {track_ms_max[0]:.1f}ms)",
+                    f"[ros_oak_rgbd] track {track_n[0]}/s  "
+                    f"<=33ms {on_n[0]}  >33ms {over_n[0]} (sum {over_ms[0]:.0f}ms)",
                     flush=True,
                 )
-                color_n[0] = depth_n[0] = sync_n[0] = 0
-                decode_fail[0] = track_fail[0] = fed_n[0] = 0
-                track_ms_max[0] = 0.0
+                track_n[0] = on_n[0] = over_n[0] = 0
+                over_ms[0] = 0.0
                 last_log_time[0] = now
 
-        def on_rgbd_pair(color_msg, depth_msg):
-            sync_n[0] += 1
+        def on_rgbd(*msgs):
+            # Subscribers are registered [color0, depth0, color1, depth1, ...],
+            # so the synchronized tuple interleaves the same way.
+            color_msgs = msgs[0::2]
+            depth_msgs = msgs[1::2]
             ts = (
-                color_msg.header.stamp.sec * 1_000_000_000
-                + color_msg.header.stamp.nanosec
+                color_msgs[0].header.stamp.sec * 1_000_000_000
+                + color_msgs[0].header.stamp.nanosec
             )
             if ts <= last_ts[0]:
                 return
             last_ts[0] = ts
 
-            color = _decode_oak_raw_color(color_msg)
-            if color is None:
-                decode_fail[0] += 1
-                print(
-                    f"[ros_oak_rgbd] color decode failed "
-                    f"(encoding={color_msg.encoding!r})",
-                    flush=True,
-                )
-                _log_diag(time.monotonic())
+            colors = [_decode_oak_raw_color(m) for m in color_msgs]
+            if any(c is None for c in colors):
+                bad = [self._entries[i]["key"]
+                       for i, c in enumerate(colors) if c is None]
+                print(f"[ros_oak_rgbd] color decode failed for {bad}", flush=True)
                 return
-            depth = _decode_oak_raw_depth(depth_msg)
-            if depth is None:
-                decode_fail[0] += 1
-                print(
-                    f"[ros_oak_rgbd] depth decode failed "
-                    f"(encoding={getattr(depth_msg, 'encoding', None)!r})",
-                    flush=True,
-                )
-                _log_diag(time.monotonic())
+            depths = [_decode_oak_raw_depth(m) for m in depth_msgs]
+            if any(d is None for d in depths):
+                bad = [self._entries[i]["key"]
+                       for i, d in enumerate(depths) if d is None]
+                print(f"[ros_oak_rgbd] depth decode failed for {bad}", flush=True)
                 return
 
             t0 = time.monotonic()
             vo_pose_estimate, slam_pose = tracker.track(
-                ts, images=[color], depths=[depth]
+                ts, images=colors, depths=depths
             )
             track_ms = (time.monotonic() - t0) * 1000
-            last_track_ms[0] = track_ms
-            if track_ms > track_ms_max[0]:
-                track_ms_max[0] = track_ms
+
+            track_n[0] += 1
+            if track_ms > BUDGET_MS:
+                over_n[0] += 1
+                over_ms[0] += track_ms
+            else:
+                on_n[0] += 1
+            _log_diag(time.monotonic())
 
             if vo_pose_estimate.world_from_rig is None or slam_pose is None:
-                track_fail[0] += 1
-                _log_diag(time.monotonic())
                 return
-
-            fed_n[0] += 1
-            _log_diag(time.monotonic())
 
             landmarks = [
                 Landmark(lm.id, lm.coords) for lm in tracker.get_last_landmarks()
@@ -1010,46 +1039,32 @@ class RosOakRGBDTracker(BaseTracker):
                     ts,
                     Pose(vo_pose_estimate.world_from_rig.pose),
                     Pose(slam_pose),
-                    (color, depth),
+                    tuple(colors),
                     landmarks,
                 )
             )
 
-        # Per-topic arrival counters. These hang off the SAME message_filters
-        # subscriptions used for sync (registerCallback on the filter), so we
-        # get independent color/depth tick counts without a second ROS
-        # subscription per topic — duplicate raw-Image subs were doubling the
-        # ~750 KB/frame transport into this node and starving the raw stream.
-        # If color/depth keep ticking but sync stops, the slop is too tight or
-        # stamps drifted; if a topic stops ticking, transport is the bottleneck.
-        def _color_diag_cb(_):
-            color_n[0] += 1
-            _log_diag(time.monotonic())
-
-        def _depth_diag_cb(_):
-            depth_n[0] += 1
-            _log_diag(time.monotonic())
-
         self._node = Node("ros_oak_rgbd_frames")
-        # Raw rgb (sensor_msgs/Image), like the raw stereo depth.
-        color_sub = message_filters.Subscriber(
-            self._node, Image, self._color_image_topic, qos_profile=qos
-        )
-        depth_sub = message_filters.Subscriber(
-            self._node, Image, self._depth_image_topic, qos_profile=qos
-        )
-        color_sub.registerCallback(_color_diag_cb)
-        depth_sub.registerCallback(_depth_diag_cb)
+        # Raw rgb + raw depth (sensor_msgs/Image), one pair per camera.
+        subscribers = []
+        topics_log: List[str] = []
+        for entry in self._entries:
+            for topic in (entry["color_topic"], entry["depth_topic"]):
+                subscribers.append(
+                    message_filters.Subscriber(
+                        self._node, Image, topic, qos_profile=qos
+                    )
+                )
+                topics_log.append(topic)
         self._sync = message_filters.ApproximateTimeSynchronizer(
-            [color_sub, depth_sub], queue_size=QUEUE_SIZE, slop=SLOP_SEC
+            subscribers, queue_size=QUEUE_SIZE, slop=SLOP_SEC
         )
-        self._sync.registerCallback(on_rgbd_pair)
+        self._sync.registerCallback(on_rgbd)
 
         print(
             f"[ros_oak_rgbd] Subscribed (ApproximateTimeSynchronizer "
-            f"slop={SLOP_SEC*1000:.0f}ms): "
-            f"{self._color_image_topic} (RAW color), "
-            f"{self._depth_image_topic} (RAW depth)",
+            f"slop={SLOP_SEC*1000:.0f}ms, {n} RGB-D pair(s)): "
+            + ", ".join(topics_log),
             flush=True,
         )
 

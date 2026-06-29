@@ -206,6 +206,54 @@ def _spin_ros_node(node, tracker) -> None:
         rclpy.spin_once(node, timeout_sec=0.1)
 
 
+class TrackBudgetLogger:
+    """Per-second tracker-latency diagnostic shared by the OAK trackers.
+
+    We have a ~33ms frame budget (30 fps) to run tracker.track() and publish on
+    the single spin thread. Call ``record(track_ms)`` once per frame; it buckets
+    the frame against that budget and, once per second (only when ``debug``),
+    prints how many tracks stayed within budget vs blew past it and the wall time
+    the over-budget ones cost. That over-budget wall time is exactly what's stolen
+    from capturing the next frames, since track() blocks the spin thread:
+
+        track/s   = frames fed to tracker.track()
+        <=33ms    = tracks within the frame budget
+        >33ms     = tracks over budget
+        sum       = accumulated wall time of the over-budget tracks
+    """
+
+    BUDGET_MS = 1000.0 / 30.0  # ~33.3ms, one 30fps frame
+
+    def __init__(self, tag: str, debug: bool) -> None:
+        self._tag = tag
+        self._debug = debug
+        self._track_n = 0
+        self._on_n = 0
+        self._over_n = 0
+        self._over_ms = 0.0
+        self._last_log = time.monotonic()
+
+    def record(self, track_ms: float) -> None:
+        self._track_n += 1
+        if track_ms > self.BUDGET_MS:
+            self._over_n += 1
+            self._over_ms += track_ms
+        else:
+            self._on_n += 1
+        if not self._debug:
+            return
+        now = time.monotonic()
+        if now - self._last_log >= 1.0:
+            print(
+                f"[{self._tag}] track {self._track_n}/s  "
+                f"<=33ms {self._on_n}  >33ms {self._over_n} (sum {self._over_ms:.0f}ms)",
+                flush=True,
+            )
+            self._track_n = self._on_n = self._over_n = 0
+            self._over_ms = 0.0
+            self._last_log = now
+
+
 # ---------- Local helpers for raw-image OAK stereo (no realsense dep) ----------
 
 def _oak_image_to_raw_camera_info_topic(image_topic: str) -> str:
@@ -240,7 +288,7 @@ def _make_oak_raw_camera(k, d, width: int, height: int, rig_from_camera_4x4) -> 
     )
     return cam
 
-SLOP_SEC = 0.033
+SLOP_SEC = 0.066
 QUEUE_SIZE = 2
 
 
@@ -290,20 +338,6 @@ def _rig_from_camera_from_robot_pose(rotation_cfg: dict, translation_cfg):
     m[:3, :3] = R_rig
     m[:3, 3] = t_rig
     return m
-
-
-def _oak_image_to_compressed_topic(image_topic: str) -> str:
-    """OAK images are recorded as compressed: /base/front/left/image_raw/compressed"""
-    return image_topic + "/compressed"
-
-
-def _decode_oak_compressed_image(msg) -> "np.ndarray | None":
-    import cv2
-    import numpy as np
-
-    data = np.frombuffer(bytes(msg.data), dtype=np.uint8)
-    img = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
-    return np.ascontiguousarray(img) if img is not None else None
 
 
 def _decode_oak_raw_color(msg) -> "np.ndarray | None":
@@ -369,78 +403,45 @@ def _load_rena_oak_cameras():
     return out
 
 
-def _oak_image_topic_suffix(image_mode: str) -> str:
-    """Map config image_mode to ROS topic segment (image_raw vs image_rect)."""
-    if image_mode in ("raw", "alternate"):
-        return "raw"
-    if image_mode == "rect":
-        return "rect"
-    raise ValueError(
-        f"unsupported OAK image_mode {image_mode!r}; "
-        "expected 'raw', 'rect', or 'alternate'"
-    )
-
-
-def _oak_topics_for_entry(entry: dict) -> tuple[str, str]:
-    """Return (left_topic, right_topic) for a config.yaml OAK entry, using its
-    image_mode to pick the image_raw / image_rect suffix."""
-    suffix = f"image_{_oak_image_topic_suffix(entry['image_mode'])}"
-    ns = f"/{entry['robot_part']}/{entry['key']}"
-    # return f"{ns}/dot_off/left/{suffix}", f"{ns}/dot_off/right/{suffix}"
-    return f"{ns}/left/{suffix}", f"{ns}/right/{suffix}"
-
-
 class RosOakStereoTracker(BaseTracker):
-    """Unified OAK stereo tracker — single or multi-camera.
+    """OAK stereo tracker — raw left + raw right mono, single or multi-camera.
 
-    Reads every OAK entry from rena_bringup/config/config.yaml and auto-picks
-    cuVSLAM stereo (1 pair) vs multicam (N pairs). All inter-unit extrinsics
-    live in config.yaml under each entry's ``rig:`` block (translation +
-    rotation in robot body frame, x-fwd/y-left/z-up); the tracker rebases that
-    into cuVSLAM's optical rig convention before calling ``track()``. The
-    within-unit L/R baseline always comes from ``rect_calib.baseline_m``.
+    Reads every OAK entry from /etc/rena/config.yaml and feeds cuVSLAM the raw
+    left/right images straight from the depthai driver:
+        left:  /<part>/<key>/left/image_raw
+        right: /<part>/<key>/right/image_raw
 
-    Images are fed to tracker.track() in order:
+    Intrinsics come from each camera's CameraInfo (same as RosOakRGBDTracker).
+    The left camera is placed by the config ``rig`` block (robot body frame,
+    x-fwd / y-left / z-up); the right by the config ``stereo_extrinsic``
+    (right_from_left), which also carries the baseline. No rectification,
+    image_mode, or rect_calib is involved — cuVSLAM triangulates the raw pair.
+
+    Images are fed to track() in order:
         [cam0_left, cam0_right, cam1_left, cam1_right, ...]
     """
 
     def __init__(self, debug: bool = False) -> None:
-        self._debug = debug
+        self._debug = True
         oaks = _load_rena_oak_cameras()
         if not oaks:
             raise RuntimeError(
-                "RosOakStereoTracker: no OAK cameras found in rena_bringup config.yaml."
+                "RosOakStereoTracker: no OAK cameras found in /etc/rena/config.yaml."
             )
-
-        # cuVSLAM's rectified_stereo_camera is a rig-wide flag; all OAKs must
-        # agree on raw vs rect streams (raw and alternate both use image_raw).
-        modes = {o["image_mode"] for o in oaks}
-        try:
-            kinds = {_oak_image_topic_suffix(m) for m in modes}
-        except ValueError as e:
-            raise RuntimeError(f"RosOakStereoTracker: {e}") from e
-        if len(kinds) > 1:
-            raise RuntimeError(
-                f"RosOakStereoTracker: mixed image_mode across OAKs ({sorted(modes)}). "
-                "cuVSLAM requires all cameras to share one rectified_stereo_camera "
-                "setting — make every OAK's image_mode match."
-            )
-        self._rect_cam_info = kinds == {"rect"}
         self._entries = oaks
+        self._running = False
         for e in self._entries:
-            left_topic, right_topic = _oak_topics_for_entry(e)
-            e["left_topic"] = left_topic
-            e["right_topic"] = right_topic
+            ns = f"/{e['robot_part']}/{e['key']}"
+            e["left_topic"] = f"{ns}/left/image_raw"
+            e["right_topic"] = f"{ns}/right/image_raw"
 
-        mode_label = "RECT" if self._rect_cam_info else "RAW"
-        print(f"[ros_oak_stereo] mode={mode_label}  N={len(self._entries)}")
+        print(f"[ros_oak_stereo] N={len(self._entries)}")
         for i, e in enumerate(self._entries):
             print(
-                f"  cam{i}: serial={e['serial_no']} {e['robot_part']}/{e['key']}  "
-                f"topics: {e['left_topic']} | {e['right_topic']}"
+                f"  cam{i}: serial={e['serial_no']} {e['robot_part']}/{e['key']}\n"
+                f"    left:  {e['left_topic']}\n"
+                f"    right: {e['right_topic']}"
             )
-
-        self._running = False
 
     @property
     def num_viz_cameras(self) -> int:
@@ -453,22 +454,6 @@ class RosOakStereoTracker(BaseTracker):
         return list(range(0, len(self._entries) * 2, 2))
 
     def setup_camera_parameters(self) -> Dict[str, Dict]:
-        per_entry: List[Dict] = []
-
-        if self._rect_cam_info:
-            for entry in self._entries:
-                calib = entry["rect_calib"]
-                if calib is None:
-                    raise RuntimeError(
-                        f"OAK serial {entry['serial_no']} in config.yaml is "
-                        f"missing its rect_calib block (required for rect mode)."
-                    )
-                per_entry.append({"entry": entry, "calib": calib})
-            return {"entries": per_entry}
-
-        # Raw mode: batch-collect every CameraInfo pair. Baseline comes from
-        # rect_calib.baseline_m (not /tf) — the TF baseline can drift; rect_calib
-        # is the factory stereo calibration and keeps the scale correct.
         import rclpy
         from rclpy.node import Node
         from sensor_msgs.msg import CameraInfo
@@ -477,22 +462,20 @@ class RosOakStereoTracker(BaseTracker):
         for i in range(len(self._entries)):
             keys += [f"cam{i}_left", f"cam{i}_right"]
 
-        print(
-            f"[ros_oak_stereo] Waiting for raw CameraInfo on {len(keys)} topics ..."
-        )
         collector = _CameraInfoCollector(keys)
         node = Node("ros_oak_stereo_camera_info")
         for i, entry in enumerate(self._entries):
-            left_info = _oak_image_to_raw_camera_info_topic(entry["left_topic"])
-            right_info = _oak_image_to_raw_camera_info_topic(entry["right_topic"])
-            node.create_subscription(
-                CameraInfo, left_info, partial(collector.on_info, f"cam{i}_left"), 10
-            )
-            node.create_subscription(
-                CameraInfo, right_info, partial(collector.on_info, f"cam{i}_right"), 10
-            )
+            for side in ("left", "right"):
+                info_topic = _oak_image_to_raw_camera_info_topic(entry[f"{side}_topic"])
+                print(f"[ros_oak_stereo] Waiting for CameraInfo on {info_topic} ...")
+                node.create_subscription(
+                    CameraInfo,
+                    info_topic,
+                    partial(collector.on_info, f"cam{i}_{side}"),
+                    10,
+                )
 
-        deadline = time.time() + 5.0
+        deadline = time.time() + 30.0
         while not collector.has_all() and time.time() < deadline:
             rclpy.spin_once(node, timeout_sec=0.5)
         node.destroy_node()
@@ -500,30 +483,24 @@ class RosOakStereoTracker(BaseTracker):
         missing = [k for k, v in collector.received.items() if v is None]
         if missing:
             raise TimeoutError(
-                f"Did not receive CameraInfo for {missing} within 5 s"
+                f"Did not receive CameraInfo for {missing} within 30 s"
             )
-        print("[ros_oak_stereo] raw CameraInfo received for all cameras")
-
-        for i, entry in enumerate(self._entries):
-            if entry["rect_calib"] is None:
-                raise RuntimeError(
-                    f"OAK serial {entry['serial_no']} in config.yaml is missing "
-                    "its rect_calib block (needed for baseline_m in raw mode too)."
-                )
-            per_entry.append({
-                "entry": entry,
-                "left_msg": collector.received[f"cam{i}_left"],
-                "right_msg": collector.received[f"cam{i}_right"],
-            })
-
-        return {"entries": per_entry}
+        print("[ros_oak_stereo] CameraInfo received for all cameras")
+        return {
+            "left_msgs": [
+                collector.received[f"cam{i}_left"] for i in range(len(self._entries))
+            ],
+            "right_msgs": [
+                collector.received[f"cam{i}_right"] for i in range(len(self._entries))
+            ],
+        }
 
     def create_odometry_config(self) -> vslam.Tracker.OdometryConfig:
         return vslam.Tracker.OdometryConfig(
             async_sba=False,
             enable_final_landmarks_export=True,
             enable_observations_export=True,
-            rectified_stereo_camera=self._rect_cam_info,
+            rectified_stereo_camera=False,
             use_denoising=False,
         )
 
@@ -534,131 +511,81 @@ class RosOakStereoTracker(BaseTracker):
         import numpy as np
         from scipy.spatial.transform import Rotation
 
-        def _mk_rect(calib: dict, rig_from_cam: "np.ndarray") -> vslam.Camera:
-            cam = vslam.Camera()
-            cam.focal = (calib["fx"], calib["fy"])
-            cam.principal = (calib["cx"], calib["cy"])
-            cam.size = (calib["width"], calib["height"])
-            cam.distortion = vslam.Distortion(vslam.Distortion.Model.Pinhole)
-            m = np.asarray(rig_from_cam, dtype=np.float64)
-            cam.rig_from_camera = vslam.Pose(
-                rotation=Rotation.from_matrix(m[:3, :3]).as_quat(),
-                translation=m[:3, 3],
-            )
-            return cam
-
+        np.set_printoptions(precision=6, suppress=True)
         cameras: List[vslam.Camera] = []
-        for p in camera_params["entries"]:
-            entry = p["entry"]
+        for i, entry in enumerate(self._entries):
+            left_msg = camera_params["left_msgs"][i]
+            right_msg = camera_params["right_msgs"][i]
+
             rig_cfg = entry.get("rig") or {}
             rig_from_left = _rig_from_camera_from_robot_pose(
                 rig_cfg.get("rotation"),
                 rig_cfg.get("translation"),
             )
-            print(
-                f"[ros_oak_stereo] {entry['robot_part']}/{entry['key']}: "
-                f"rig_from_left t={rig_from_left[:3, 3].tolist()}"
-            )
 
-            # rig_from_right = rig_from_left @ left_from_right.
-            #
-            # In rect mode: rectified stereo guarantees parallel optical axes,
-            # so left_from_right is just a +x baseline shim (rect_calib.baseline_m).
-            #
-            # In raw mode: cuVSLAM does its own triangulation from the raw
-            # frames and needs the *true* L<->R rigid transform — small (~1deg)
-            # rotation + (ty, tz) offsets are physically present and ignoring
-            # them gives wrong-depth landmarks and short trajectories. Use
-            # entry['stereo_extrinsic'] (right_from_left, factory) when given.
-            baseline_m = entry["rect_calib"]["baseline_m"]
+            # cuVSLAM tracks the raw pair, so it needs the true L<->R rigid
+            # transform (baseline + small mount rotation), not just a scalar
+            # baseline. That lives in config.yaml stereo_extrinsic
+            # (right_from_left, factory) — the same config-driven extrinsic the
+            # RGBD rig is placed with. rig_from_right = rig_from_left @ left_from_right.
             stereo_ext = entry.get("stereo_extrinsic")
-            if self._rect_cam_info or stereo_ext is None:
-                if not self._rect_cam_info:
-                    print(
-                        f"[ros_oak_stereo] WARN {entry['robot_part']}/"
-                        f"{entry['key']}: raw mode without stereo_extrinsic; "
-                        "falling back to +x baseline shim — tracking will drift."
-                    )
-                left_from_right = np.eye(4)
-                left_from_right[0, 3] = baseline_m
-            else:
-                ext_t = np.asarray(stereo_ext["translation"], dtype=np.float64)
-                ext_q = np.asarray(stereo_ext["rotation"], dtype=np.float64)
-                if ext_t.shape != (3,) or ext_q.shape != (4,):
-                    raise ValueError(
-                        f"stereo_extrinsic for {entry['serial_no']} must have "
-                        "translation (3) and rotation (4 = qx,qy,qz,qw)"
-                    )
-                right_from_left = np.eye(4)
-                right_from_left[:3, :3] = Rotation.from_quat(ext_q).as_matrix()
-                right_from_left[:3, 3] = ext_t
-                left_from_right = np.linalg.inv(right_from_left)
-            rig_from_right = rig_from_left @ left_from_right
-
-            if self._rect_cam_info:
-                calib = p["calib"]
-                cam_left = _mk_rect(calib, rig_from_left)
-                cam_right = _mk_rect(calib, rig_from_right)
-                k_left = [calib["fx"], 0, calib["cx"],
-                          0, calib["fy"], calib["cy"], 0, 0, 1]
-                k_right = list(k_left)
-                d_left = [0.0] * 8
-                d_right = [0.0] * 8
-            else:
-                left_msg = p["left_msg"]
-                right_msg = p["right_msg"]
-                cam_left = _make_oak_raw_camera(
-                    k=left_msg.k, d=left_msg.d,
-                    width=left_msg.width, height=left_msg.height,
-                    rig_from_camera_4x4=rig_from_left,
+            if stereo_ext is None:
+                raise RuntimeError(
+                    f"OAK serial {entry['serial_no']} in config.yaml is missing "
+                    "its stereo_extrinsic block (right_from_left), required for "
+                    "the raw stereo baseline."
                 )
-                cam_right = _make_oak_raw_camera(
-                    k=right_msg.k, d=right_msg.d,
-                    width=right_msg.width, height=right_msg.height,
-                    rig_from_camera_4x4=rig_from_right,
+            ext_t = np.asarray(stereo_ext["translation"], dtype=np.float64)
+            ext_q = np.asarray(stereo_ext["rotation"], dtype=np.float64)
+            if ext_t.shape != (3,) or ext_q.shape != (4,):
+                raise ValueError(
+                    f"stereo_extrinsic for {entry['serial_no']} must have "
+                    "translation (3) and rotation (4 = qx,qy,qz,qw)"
                 )
-                k_left = list(left_msg.k)
-                k_right = list(right_msg.k)
-                d_left = [float(left_msg.d[i]) if i < len(left_msg.d) else 0.0
-                          for i in range(8)]
-                d_right = [float(right_msg.d[i]) if i < len(right_msg.d) else 0.0
-                           for i in range(8)]
+            right_from_left = np.eye(4)
+            right_from_left[:3, :3] = Rotation.from_quat(ext_q).as_matrix()
+            right_from_left[:3, 3] = ext_t
+            rig_from_right = rig_from_left @ np.linalg.inv(right_from_left)
 
+            cam_left = _make_oak_raw_camera(
+                k=left_msg.k, d=left_msg.d,
+                width=left_msg.width, height=left_msg.height,
+                rig_from_camera_4x4=rig_from_left,
+            )
+            cam_right = _make_oak_raw_camera(
+                k=right_msg.k, d=right_msg.d,
+                width=right_msg.width, height=right_msg.height,
+                rig_from_camera_4x4=rig_from_right,
+            )
             cameras.append(cam_left)
             cameras.append(cam_right)
 
-            np.set_printoptions(precision=6, suppress=True)
             label = f"{entry['robot_part']}/{entry['key']}"
-            mode = "RECT" if self._rect_cam_info else "RAW"
-            for side, cam, k, d in (("LEFT (CAM_B)", cam_left, k_left, d_left),
-                                    ("RIGHT (CAM_C)", cam_right, k_right, d_right)):
-                K = np.asarray(k, dtype=np.float64).reshape(3, 3)
-                D = np.asarray(d, dtype=np.float64)
-                rfc_t = np.asarray(cam.rig_from_camera.translation)
-                rfc_q = np.asarray(cam.rig_from_camera.rotation)
+            for side, cam, msg in (("LEFT", cam_left, left_msg),
+                                   ("RIGHT", cam_right, right_msg)):
+                K = np.asarray(list(msg.k), dtype=np.float64).reshape(3, 3)
+                D = np.asarray(
+                    [float(msg.d[j]) if j < len(msg.d) else 0.0 for j in range(8)],
+                    dtype=np.float64,
+                )
                 print()
-                print(f"--- [ros_oak_stereo] {label} {side}  mode={mode} ---")
+                print(f"--- [ros_oak_stereo] {label} {side} ---")
                 print(f"size = {cam.size}")
                 print(f"focal = {cam.focal}")
                 print(f"principal = {cam.principal}")
                 print(f"K =\n{K}")
                 print(f"D (8) = {D}")
-                print(f"distortion model = {cam.distortion.model}")
-                print(f"rig_from_camera.translation [m] = {rfc_t}")
-                print(f"rig_from_camera.rotation (qx,qy,qz,qw) = {rfc_q}")
+                print(f"rig_from_camera.translation [m] = "
+                      f"{np.asarray(cam.rig_from_camera.translation)}")
+                print(f"rig_from_camera.rotation (qx,qy,qz,qw) = "
+                      f"{np.asarray(cam.rig_from_camera.rotation)}")
 
             rig_t_left = np.asarray(cam_left.rig_from_camera.translation)
             rig_t_right = np.asarray(cam_right.rig_from_camera.translation)
-            rig_baseline_m = float(np.linalg.norm(rig_t_right - rig_t_left))
             print()
-            print(f"[ros_oak_stereo] {label} baseline (rect_calib.baseline_m): "
-                  f"{baseline_m:.6f} m")
-            print(f"[ros_oak_stereo] {label} baseline (||rig_t_R - rig_t_L||):  "
-                  f"{rig_baseline_m:.6f} m")
+            print(f"[ros_oak_stereo] {label} baseline (||rig_t_R - rig_t_L||): "
+                  f"{float(np.linalg.norm(rig_t_right - rig_t_left)):.6f} m")
             print()
-
-        # for cam in cameras:
-        #     cam.border_bottom = cam.size[1] // 4
 
         rig = vslam.Rig()
         rig.cameras = cameras
@@ -668,20 +595,20 @@ class RosOakStereoTracker(BaseTracker):
         self, tracker: vslam.Tracker, output_queue: queue.Queue, **kwargs
     ) -> None:
         import message_filters
-        from sensor_msgs.msg import CompressedImage, Image
+        from sensor_msgs.msg import Image
         from rclpy.node import Node
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
         self._running = True
+        n = len(self._entries)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,
         )
 
-        frames_fed = [0]
-        last_log_time = [time.monotonic()]
+        budget = TrackBudgetLogger("ros_oak_stereo", self._debug)
         last_ts = [0]
 
         def on_frames(*msgs):
@@ -693,32 +620,17 @@ class RosOakStereoTracker(BaseTracker):
                 return
             last_ts[0] = ts
 
-            t_decode = time.monotonic()
-            images = [_decode_oak_compressed_image(m) for m in msgs]
-            decode_ms = (time.monotonic() - t_decode) * 1000
-
+            images = [_decode_oak_raw_color(m) for m in msgs]
             if any(img is None for img in images):
-                print("[ros_oak_stereo] Warning: decode failed", flush=True)
+                print("[ros_oak_stereo] image decode failed", flush=True)
                 return
 
             t0 = time.monotonic()
             vo_pose_estimate, slam_pose = tracker.track(ts, images)
-            track_ms = (time.monotonic() - t0) * 1000
+            budget.record((time.monotonic() - t0) * 1000)
 
             if vo_pose_estimate.world_from_rig is None or slam_pose is None:
-                print("[ros_oak_stereo] Warning: track failed", flush=True)
                 return
-
-            frames_fed[0] += 1
-            now = time.monotonic()
-            if self._debug and now - last_log_time[0] >= 1.0:
-                print(
-                    f"[ros_oak_stereo] fed={frames_fed[0]}/s  "
-                    f"decode={decode_ms:.1f}ms  track={track_ms:.1f}ms",
-                    flush=True,
-                )
-                frames_fed[0] = 0
-                last_log_time[0] = now
 
             landmarks = [
                 Landmark(lm.id, lm.coords) for lm in tracker.get_last_landmarks()
@@ -728,7 +640,7 @@ class RosOakStereoTracker(BaseTracker):
                     ts,
                     Pose(vo_pose_estimate.world_from_rig.pose),
                     Pose(slam_pose),
-                    images,
+                    tuple(images),
                     landmarks,
                 )
             )
@@ -738,22 +650,22 @@ class RosOakStereoTracker(BaseTracker):
         topics_log: List[str] = []
         for entry in self._entries:
             for topic in (entry["left_topic"], entry["right_topic"]):
-                compressed = _oak_image_to_compressed_topic(topic)
                 subscribers.append(
                     message_filters.Subscriber(
-                        self._node, CompressedImage, compressed, qos_profile=qos
+                        self._node, Image, topic, qos_profile=qos
                     )
                 )
-                topics_log.append(compressed)
+                topics_log.append(topic)
 
         self._sync = message_filters.ApproximateTimeSynchronizer(
-            subscribers, queue_size=100, slop=SLOP_SEC
+            subscribers, queue_size=QUEUE_SIZE, slop=SLOP_SEC
         )
         self._sync.registerCallback(on_frames)
 
         print(
             f"[ros_oak_stereo] Subscribed (ApproximateTimeSynchronizer "
-            f"slop={SLOP_SEC*1000:.0f}ms): " + ", ".join(topics_log),
+            f"slop={SLOP_SEC*1000:.0f}ms, {n} stereo pair(s)): "
+            + ", ".join(topics_log),
             flush=True,
         )
 
@@ -790,7 +702,7 @@ class RosOakRGBDTracker(BaseTracker):
     """
 
     def __init__(self, depth_scale: float = 0.001, debug: bool = False) -> None:
-        self._debug = debug
+        self._debug = True
 
         oaks = [o for o in _load_rena_oak_cameras() if o["robot_part"] == "base"]
         if not oaks:
@@ -953,35 +865,8 @@ class RosOakRGBDTracker(BaseTracker):
             depth=1,
         )
 
-        # Track-latency budget, logged every 1s. We have a ~33ms frame budget
-        # (30 fps) to run tracker.track() and publish odometry on the single
-        # spin thread. The only thing reported is: of the frames fed to track()
-        # in the last second, how many stayed within budget vs blew past it,
-        # and how much wall time the over-budget ones cost. That over-budget
-        # wall time is exactly what's stolen from capturing the next frames,
-        # since track() blocks this thread.
-        #   track/s   = frames fed to tracker.track()
-        #   <=33ms    = tracks within the frame budget
-        #   >33ms     = tracks over budget
-        #   sum       = accumulated wall time of the over-budget tracks
-        BUDGET_MS = 1000.0 / 30.0  # ~33.3ms, one 30fps frame
-        track_n  = [0]
-        on_n     = [0]
-        over_n   = [0]
-        over_ms  = [0.0]
-        last_log_time = [time.monotonic()]
+        budget = TrackBudgetLogger("ros_oak_rgbd", self._debug)
         last_ts = [0]
-
-        def _log_diag(now):
-            if self._debug and now - last_log_time[0] >= 1.0:
-                print(
-                    f"[ros_oak_rgbd] track {track_n[0]}/s  "
-                    f"<=33ms {on_n[0]}  >33ms {over_n[0]} (sum {over_ms[0]:.0f}ms)",
-                    flush=True,
-                )
-                track_n[0] = on_n[0] = over_n[0] = 0
-                over_ms[0] = 0.0
-                last_log_time[0] = now
 
         def on_rgbd(*msgs):
             color_msgs = msgs[0::2]
@@ -1011,15 +896,7 @@ class RosOakRGBDTracker(BaseTracker):
             vo_pose_estimate, slam_pose = tracker.track(
                 ts, images=colors, depths=depths
             )
-            track_ms = (time.monotonic() - t0) * 1000
-
-            track_n[0] += 1
-            if track_ms > BUDGET_MS:
-                over_n[0] += 1
-                over_ms[0] += track_ms
-            else:
-                on_n[0] += 1
-            _log_diag(time.monotonic())
+            budget.record((time.monotonic() - t0) * 1000)
 
             if vo_pose_estimate.world_from_rig is None or slam_pose is None:
                 return

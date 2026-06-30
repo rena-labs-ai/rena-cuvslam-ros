@@ -79,53 +79,6 @@ bool fill_depth_image(cuvslam::Image& img, const sensor_msgs::msg::Image& msg,
 
 }  // namespace
 
-// ----------------------------- CameraStatsLogger ---------------------------
-
-void CameraStatsLogger::record_raw(int cam, bool is_depth) {
-  std::lock_guard<std::mutex> lk(mu_);
-  if (is_depth)
-    ++raw_depth_[cam];
-  else
-    ++raw_rgb_[cam];
-  maybe_log_locked();
-}
-
-void CameraStatsLogger::record_track(double track_ms) {
-  std::lock_guard<std::mutex> lk(mu_);
-  ++track_n_;
-  if (track_ms > kBudgetMs) {
-    ++over_n_;
-    over_ms_ += track_ms;
-  } else {
-    ++on_n_;
-  }
-}
-
-void CameraStatsLogger::maybe_log_locked() {
-  // TEMP: always emit the one-line ladder (INFO, 1/s) regardless of `debug_`,
-  // so we don't have to set global log_level:=debug (which spams everything).
-  (void)debug_;
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_log_ < 1s) return;
-
-  std::string cams;
-  for (int i = 0; i < n_; ++i) {
-    if (i) cams += " | ";
-    cams += "cam" + std::to_string(i) + " rgb " + std::to_string(raw_rgb_[i]) +
-            " depth " + std::to_string(raw_depth_[i]);
-  }
-  RCLCPP_INFO(
-      logger_, "[%s] %s | sync %d/s | decode %d/s | track %d/s <=33 %d >33 %d (sum %.0fms)",
-      tag_.c_str(), cams.c_str(), sync_n_, decode_n_, track_n_, on_n_, over_n_,
-      over_ms_);
-
-  std::fill(raw_rgb_.begin(), raw_rgb_.end(), 0);
-  std::fill(raw_depth_.begin(), raw_depth_.end(), 0);
-  sync_n_ = decode_n_ = track_n_ = on_n_ = over_n_ = 0;
-  over_ms_ = 0.0;
-  last_log_ = now;
-}
-
 // ------------------------------- RgbdTracker --------------------------------
 
 RgbdTracker::RgbdTracker(rclcpp::Node::SharedPtr node, double depth_scale, bool debug)

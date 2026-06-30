@@ -18,10 +18,8 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,6 +32,7 @@
 #include <sensor_msgs/msg/image.hpp>
 
 #include "rena_cuvslam_ros/frame_conversions.hpp"
+#include "rena_cuvslam_ros/tracker_common.hpp"
 
 // Forward-declare so the heavy cuVSLAM header only lands in the .cpp.
 namespace cuvslam {
@@ -42,9 +41,6 @@ class Slam;
 }  // namespace cuvslam
 
 namespace rena_cuvslam {
-
-using ResultCallback =
-    std::function<void(int64_t timestamp_ns, const RosPose& pose)>;
 
 // One base OAK RGB-D camera from /etc/rena/config.yaml.
 struct CameraEntry {
@@ -57,81 +53,6 @@ struct CameraEntry {
   double pitch_deg = 0.0;
   double yaw_deg = 0.0;
   Vec3 translation = {0.0, 0.0, 0.0};
-};
-
-// Single-slot latest-wins mailbox: put() overwrites whatever is pending so a
-// slow track stage never stalls ingestion; get() blocks until an item or close.
-template <typename T>
-class LatestSlot {
- public:
-  void put(T item) {
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      item_ = std::move(item);
-      has_ = true;
-    }
-    cv_.notify_one();
-  }
-
-  // Returns false on timeout or after close() with no pending item.
-  bool get(T& out, std::chrono::milliseconds timeout) {
-    std::unique_lock<std::mutex> lk(mu_);
-    if (!has_ && !closed_) cv_.wait_for(lk, timeout, [&] { return has_ || closed_; });
-    if (!has_) return false;
-    out = std::move(item_);
-    has_ = false;
-    return true;
-  }
-
-  void close() {
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      closed_ = true;
-    }
-    cv_.notify_all();
-  }
-
- private:
-  std::mutex mu_;
-  std::condition_variable cv_;
-  T item_{};
-  bool has_ = false;
-  bool closed_ = false;
-};
-
-// Per-second per-camera + per-stage diagnostic ladder. Same one-line format as
-// the Python CameraStatsLogger so the two nodes' logs are directly comparable:
-//   [ros_oak_rgbd_cpp] cam0 rgb 30 depth 30 | cam1 rgb 30 depth 29 |
-//       sync 30/s | decode 30/s | track 28/s <=33 26 >33 2 (sum 90ms)
-class CameraStatsLogger {
- public:
-  static constexpr double kBudgetMs = 1000.0 / 30.0;  // ~33.3 ms
-
-  CameraStatsLogger(const rclcpp::Logger& logger, std::string tag, int n_cameras,
-                    bool debug)
-      : logger_(logger), tag_(std::move(tag)), n_(n_cameras), debug_(debug) {
-    raw_rgb_.assign(n_cameras, 0);
-    raw_depth_.assign(n_cameras, 0);
-    last_log_ = std::chrono::steady_clock::now();
-  }
-
-  void record_raw(int cam, bool is_depth);
-  void record_sync() { std::lock_guard<std::mutex> lk(mu_); ++sync_n_; }
-  void record_decode() { std::lock_guard<std::mutex> lk(mu_); ++decode_n_; }
-  void record_track(double track_ms);
-
- private:
-  void maybe_log_locked();
-
-  rclcpp::Logger logger_;
-  std::string tag_;
-  int n_;
-  bool debug_;
-  std::mutex mu_;
-  std::vector<int> raw_rgb_, raw_depth_;
-  int sync_n_ = 0, decode_n_ = 0, track_n_ = 0, on_n_ = 0, over_n_ = 0;
-  double over_ms_ = 0.0;
-  std::chrono::steady_clock::time_point last_log_;
 };
 
 class RgbdTracker {

@@ -170,4 +170,31 @@ inline double quat_to_yaw(const Quat& q) {
   return std::atan2(siny_cosp, cosy_cosp);
 }
 
+// Compute rig_from_right given rig_from_left and the right_from_left extrinsic.
+//
+// Math (rig_from_right = rig_from_left ∘ left_from_right):
+//   left_from_right = inverse(right_from_left)
+//   rig_from_right  = rig_from_left ∘ left_from_right
+//
+// Used by the stereo tracker to derive the right-camera rig pose from the
+// left-camera rig pose plus the stereo_extrinsic stored in config.yaml.
+inline RigFromCamera rig_from_right_given_left(
+    const RigFromCamera& rfc_left,
+    const Quat& right_from_left_q,
+    const Vec3& right_from_left_t) {
+  // Invert right_from_left → left_from_right
+  const Mat3 R_rf = quat_to_rotmat(right_from_left_q);
+  const Mat3 R_lf = mat3_transpose(R_rf);
+  const Vec3 neg_t = {-right_from_left_t[0], -right_from_left_t[1], -right_from_left_t[2]};
+  const Vec3 t_lf = mat3_apply(R_lf, neg_t);
+  // Compose: rig_from_left ∘ left_from_right
+  const Mat3 R_rl = quat_to_rotmat(rfc_left.rotation);
+  const Mat3 R_res = mat3_mul(R_rl, R_lf);
+  const Vec3 t_rot = mat3_apply(R_rl, t_lf);
+  const Vec3 t_res = {t_rot[0] + rfc_left.translation[0],
+                      t_rot[1] + rfc_left.translation[1],
+                      t_rot[2] + rfc_left.translation[2]};
+  return RigFromCamera{rotmat_to_quat(R_res), t_res};
+}
+
 }  // namespace rena_cuvslam

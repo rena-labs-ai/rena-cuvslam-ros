@@ -1,8 +1,11 @@
-"""Launch the C++ cuVSLAM RGB-D odometry node (rena_cuvslam_ros_cpp).
+"""Launch the C++ cuVSLAM odometry node (rena_cuvslam_ros).
 
-Drop-in for the RGBD path of rena_cuvslam_ros's cuvslam.launch.py. Assumes the
-base OAK camera(s) are already running. Topics are derived inside the node from
-/etc/rena/config.yaml (base OAK serials/keys -> rgb + stereo image_raw).
+Supports both tracker modes:
+  tracker:=ros_oak_rgbd   (default) — RGBD odometry, base OAK cameras only
+  tracker:=ros_oak_stereo           — Stereo odometry, all OAK cameras
+
+Assumes the OAK camera nodes are already running. Topics and rig extrinsics
+are derived inside the node from /etc/rena/config.yaml.
 """
 
 from launch import LaunchDescription
@@ -17,10 +20,11 @@ def _launch_setup(context, *args, **kwargs):
         "planarize", "true").strip().lower() in ("1", "true", "yes", "on")
     log_level = context.launch_configurations.get("log_level", "info").strip().lower()
     debug = log_level == "debug"
+    depth_scale = float(context.launch_configurations.get("depth_scale", "0.001"))
 
     return [
         Node(
-            package="rena_cuvslam_ros_cpp",
+            package="rena_cuvslam_ros",
             executable="vslam_node",
             name="vslam",
             output="screen",
@@ -31,6 +35,8 @@ def _launch_setup(context, *args, **kwargs):
                     "planarize": planarize,
                     "map_frame": LaunchConfiguration("map_frame"),
                     "debug": debug,
+                    "tracker": LaunchConfiguration("tracker"),
+                    "depth_scale": depth_scale,
                 }
             ],
             remappings=[("/cuvslam/odometry", odom_topic)],
@@ -68,6 +74,18 @@ def generate_launch_description():
                 default_value="info",
                 description="Global ROS log level; 'debug' enables the per-second "
                 "tracker diagnostics ladder.",
+            ),
+            DeclareLaunchArgument(
+                "tracker",
+                default_value="ros_oak_rgbd",
+                description="Tracker mode: 'ros_oak_rgbd' (RGBD, base cameras only) or "
+                "'ros_oak_stereo' (stereo, all OAK cameras).",
+            ),
+            DeclareLaunchArgument(
+                "depth_scale",
+                default_value="0.001",
+                description="Depth scale factor for RGBD mode (meters per raw depth unit; "
+                "0.001 = mm -> m). Ignored in stereo mode.",
             ),
             OpaqueFunction(function=_launch_setup),
         ]

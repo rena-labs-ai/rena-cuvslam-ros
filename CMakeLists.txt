@@ -55,7 +55,8 @@ find_package(yaml-cpp REQUIRED)
 
 add_executable(vslam_node
   src/vslam_node.cpp
-  src/rgbd_tracker.cpp)
+  src/rgbd_tracker.cpp
+  src/stereo_tracker.cpp)
 
 target_include_directories(vslam_node PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

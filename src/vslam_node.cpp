@@ -19,6 +19,7 @@
 
 #include "rena_cuvslam_ros/frame_conversions.hpp"
 #include "rena_cuvslam_ros/rgbd_tracker.hpp"
+#include "rena_cuvslam_ros/stereo_tracker.hpp"
 
 namespace {
 constexpr char kOdomTopic[] = "/cuvslam/odometry";
@@ -35,13 +36,7 @@ class VslamNode : public rclcpp::Node {
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
     debug_ = declare_parameter<bool>("debug", false);
     depth_scale_ = declare_parameter<double>("depth_scale", 0.001);
-    // Accepted for launch-file parity; this executable only serves RGBD.
-    const std::string tracker = declare_parameter<std::string>("tracker", "ros_oak_rgbd");
-    if (tracker != "ros_oak_rgbd") {
-      RCLCPP_WARN(get_logger(),
-                  "tracker='%s' ignored: rena_cuvslam_ros serves ros_oak_rgbd only",
-                  tracker.c_str());
-    }
+    declare_parameter<std::string>("tracker", "ros_oak_rgbd");
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(kOdomTopic, 10);
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -58,19 +53,34 @@ class VslamNode : public rclcpp::Node {
     st.transform.rotation.w = 1.0;
     static_broadcaster_->sendTransform(st);
 
-    tracker_ = std::make_unique<RgbdTracker>(shared_from_this(), depth_scale_, debug_);
-    tracker_->set_result_callback(
-        [this](int64_t ts, const RosPose& pose) { publish(ts, pose); });
-    tracker_->initialize();
+    const std::string tracker = get_parameter("tracker").as_string();
+    if (tracker == "ros_oak_stereo") {
+      stereo_tracker_ = std::make_unique<StereoTracker>(shared_from_this(), debug_);
+      stereo_tracker_->set_result_callback(
+          [this](int64_t ts, const RosPose& pose) { publish(ts, pose); });
+      stereo_tracker_->initialize();
+    } else {
+      if (tracker != "ros_oak_rgbd") {
+        RCLCPP_WARN(get_logger(),
+                    "Unknown tracker='%s'; falling back to ros_oak_rgbd",
+                    tracker.c_str());
+      }
+      tracker_ = std::make_unique<RgbdTracker>(shared_from_this(), depth_scale_, debug_);
+      tracker_->set_result_callback(
+          [this](int64_t ts, const RosPose& pose) { publish(ts, pose); });
+      tracker_->initialize();
+    }
 
     const std::string mode = planarize_ ? "PLANAR (yaw only)" : "full 6-DOF";
     RCLCPP_INFO(get_logger(),
-                "Publishing odometry on %s (raw 6-DOF) + TF %s->%s [%s]; static %s->%s",
+                "Publishing odometry on %s (raw 6-DOF) + TF %s->%s [%s]; static %s->%s "
+                "(tracker=%s)",
                 kOdomTopic, kOdomFrame, child_frame_.c_str(), mode.c_str(),
-                map_frame_.c_str(), kOdomFrame);
+                map_frame_.c_str(), kOdomFrame, tracker.c_str());
   }
 
   void stop() {
+    if (stereo_tracker_) stereo_tracker_->shutdown();
     if (tracker_) tracker_->shutdown();
   }
 
@@ -128,6 +138,7 @@ class VslamNode : public rclcpp::Node {
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_broadcaster_;
   std::unique_ptr<RgbdTracker> tracker_;
+  std::unique_ptr<StereoTracker> stereo_tracker_;
 };
 
 }  // namespace rena_cuvslam

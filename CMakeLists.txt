@@ -67,12 +67,21 @@ ament_target_dependencies(vslam_node
 
 target_link_libraries(vslam_node ${CUVSLAM_LIBRARY} yaml-cpp)
 
-# libcuvslam.so is loaded from its build dir; bake its directory (and the CUDA
-# runtime dir it depends on) into the rpath so the installed binary finds them.
+# Ship our cuVSLAM build *with* the package: install libcuvslam.so next to the
+# binary so the install tree is self-contained and does not depend on the
+# transient ../cuVSLAM/build/bin directory surviving.
 get_filename_component(CUVSLAM_LIB_DIR "${CUVSLAM_LIBRARY}" DIRECTORY)
+install(FILES "${CUVSLAM_LIBRARY}" DESTINATION lib/${PROJECT_NAME})
+
+# rpath: at build time load from the cuVSLAM build dir; once installed, load the
+# co-located copy via $ORIGIN. Crucially, force the legacy DT_RPATH tag
+# (--disable-new-dtags) instead of DT_RUNPATH: DT_RPATH is searched *before*
+# LD_LIBRARY_PATH, so our libcuvslam.so wins over the incompatible Isaac ROS
+# copy in /opt/ros/humble/lib (which the ROS setup puts on LD_LIBRARY_PATH).
 set_target_properties(vslam_node PROPERTIES
   BUILD_RPATH "${CUVSLAM_LIB_DIR}"
-  INSTALL_RPATH "${CUVSLAM_LIB_DIR};/usr/local/cuda/lib64")
+  INSTALL_RPATH "$ORIGIN;/usr/local/cuda/lib64")
+target_link_options(vslam_node PRIVATE "-Wl,--disable-new-dtags")
 
 install(TARGETS vslam_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})

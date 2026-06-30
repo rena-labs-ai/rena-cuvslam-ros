@@ -98,7 +98,7 @@ class StereoTracker {
 
   rclcpp::Node::SharedPtr node_;
   bool debug_;
-  std::string tag_ = "ros_oak_stereo_cpp";
+  std::string tag_ = "stereo";
 
   std::vector<StereoEntry> entries_;
   // 2 per OAK: camera_infos_[2*i] = left, camera_infos_[2*i+1] = right.

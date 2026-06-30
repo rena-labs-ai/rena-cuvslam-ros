@@ -7,8 +7,8 @@ full 30 fps.
 
 Supports two tracker modes selectable at launch time:
 
-- **`ros_oak_rgbd`** (default) — RGB-D odometry using base OAK RGB + depth
-- **`ros_oak_stereo`** — stereo odometry using all OAK cameras (left + right)
+- **`rgbd`** (default) — RGB-D odometry using base OAK RGB + depth
+- **`stereo`** — stereo odometry using all OAK cameras (left + right)
 
 ## Layout
 
@@ -48,14 +48,14 @@ by rena-commission). Start the OAK cameras first, then:
 ros2 launch rena_cuvslam_ros cuvslam.launch.py
 
 # Stereo
-ros2 launch rena_cuvslam_ros cuvslam.launch.py tracker:=ros_oak_stereo
+ros2 launch rena_cuvslam_ros cuvslam.launch.py tracker:=stereo
 ```
 
 ### Launch arguments
 
 | arg                | default             | description                                           |
 |--------------------|---------------------|-------------------------------------------------------|
-| `tracker`          | `ros_oak_rgbd`      | `ros_oak_rgbd` or `ros_oak_stereo`                    |
+| `tracker`          | `rgbd`              | `rgbd` or `stereo`                                    |
 | `odom_topic`       | `/cuvslam/odometry` | topic the odometry is published on                    |
 | `odom_child_frame` | `base_nav_link`     | `child_frame_id` and odom → child TF child frame      |
 | `planarize`        | `true`              | zero roll/pitch on the odom TF (yaw only)             |

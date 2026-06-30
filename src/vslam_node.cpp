@@ -36,7 +36,7 @@ class VslamNode : public rclcpp::Node {
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
     debug_ = declare_parameter<bool>("debug", false);
     depth_scale_ = declare_parameter<double>("depth_scale", 0.001);
-    declare_parameter<std::string>("tracker", "ros_oak_rgbd");
+    declare_parameter<std::string>("tracker", "rgbd");
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(kOdomTopic, 10);
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -54,15 +54,15 @@ class VslamNode : public rclcpp::Node {
     static_broadcaster_->sendTransform(st);
 
     const std::string tracker = get_parameter("tracker").as_string();
-    if (tracker == "ros_oak_stereo") {
+    if (tracker == "stereo") {
       stereo_tracker_ = std::make_unique<StereoTracker>(shared_from_this(), debug_);
       stereo_tracker_->set_result_callback(
           [this](int64_t ts, const RosPose& pose) { publish(ts, pose); });
       stereo_tracker_->initialize();
     } else {
-      if (tracker != "ros_oak_rgbd") {
+      if (tracker != "rgbd") {
         RCLCPP_WARN(get_logger(),
-                    "Unknown tracker='%s'; falling back to ros_oak_rgbd",
+                    "Unknown tracker='%s'; falling back to rgbd",
                     tracker.c_str());
       }
       tracker_ = std::make_unique<RgbdTracker>(shared_from_this(), depth_scale_, debug_);

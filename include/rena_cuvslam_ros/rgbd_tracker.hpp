@@ -97,7 +97,7 @@ class RgbdTracker {
   rclcpp::Node::SharedPtr node_;
   double depth_scale_;
   bool debug_;
-  std::string tag_ = "ros_oak_rgbd_cpp";
+  std::string tag_ = "rgbd";
 
   std::vector<CameraEntry> entries_;
   std::vector<sensor_msgs::msg::CameraInfo> camera_infos_;

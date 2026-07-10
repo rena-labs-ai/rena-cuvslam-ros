@@ -20,12 +20,14 @@ set(CUVSLAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cuVSLAM"
 set(CUVSLAM_INCLUDE_DIR "${CUVSLAM_DIR}/libs/cuvslam"
     CACHE PATH "Directory containing cuvslam2.h")
 
-find_library(CUVSLAM_LIBRARY
-  NAMES cuvslam
-  HINTS "${CUVSLAM_DIR}/build/bin"
-  NO_DEFAULT_PATH)
+# Prefer the copy installed by the `cuvslam` colcon package (on CMAKE_PREFIX_PATH);
+# fall back to a standalone ../cuVSLAM/build/bin checkout for manual dev builds.
+find_library(CUVSLAM_LIBRARY NAMES cuvslam)
 if(NOT CUVSLAM_LIBRARY)
-  find_library(CUVSLAM_LIBRARY NAMES cuvslam)  # fall back to system search path
+  find_library(CUVSLAM_LIBRARY
+    NAMES cuvslam
+    HINTS "${CUVSLAM_DIR}/build/bin"
+    NO_DEFAULT_PATH)
 endif()
 
 if(NOT EXISTS "${CUVSLAM_INCLUDE_DIR}/cuvslam2.h")
@@ -35,7 +37,8 @@ if(NOT EXISTS "${CUVSLAM_INCLUDE_DIR}/cuvslam2.h")
 endif()
 if(NOT CUVSLAM_LIBRARY)
   message(FATAL_ERROR
-    "libcuvslam.so not found. Build it (cuVSLAM/build_and_install.sh Stage 1) "
+    "libcuvslam.so not found. It is built by the 'cuvslam' colcon package (a "
+    "<depend> of this one) — run a full 'colcon build' so cuvslam builds first, "
     "or pass -DCUVSLAM_LIBRARY=/path/to/libcuvslam.so.")
 endif()
 message(STATUS "cuVSLAM header : ${CUVSLAM_INCLUDE_DIR}/cuvslam2.h")

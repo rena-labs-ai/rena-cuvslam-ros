@@ -16,7 +16,7 @@ namespace rena_cuvslam {
 namespace {
 
 constexpr char kConfigPath[] = "/etc/rena/config.yaml";
-constexpr int64_t kSlopNs = 1'000'000;  // SLOP_SEC = 0.001 s
+constexpr int64_t kSlopNs = 5'000'000;  // SLOP_SEC = 0.005 s
 constexpr int kSyncQueue = 10;   // per-topic buffer for ApproximateTime matching
 constexpr double kCameraInfoTimeoutS = 30.0;
 

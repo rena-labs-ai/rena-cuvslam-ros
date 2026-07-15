@@ -42,17 +42,11 @@ class Slam;
 
 namespace rena_cuvslam {
 
-// One base OAK RGB-D camera from /etc/rena/config.yaml.
-struct CameraEntry {
-  std::string key;
-  std::string serial_no;
+// One base OAK RGB-D camera: shared config block + the RGBD topics.
+struct CameraEntry : OakCameraConfig {
   std::string color_topic;
   std::string depth_topic;
   std::string info_topic;
-  double roll_deg = 0.0;
-  double pitch_deg = 0.0;
-  double yaw_deg = 0.0;
-  Vec3 translation = {0.0, 0.0, 0.0};
 };
 
 class RgbdTracker {

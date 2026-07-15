@@ -1,13 +1,13 @@
 // Shared primitives for cuVSLAM tracker implementations.
 //
+// OakCameraConfig:   one base OAK camera block from /etc/rena/config.yaml,
+//                    parsed by load_base_oak_cameras() (tracker_common.cpp)
+//                    for both the RGBD and Stereo trackers.
 // LatestSlot<T>:     single-slot latest-wins mailbox used by both RGBD and
 //                    Stereo trackers to decouple DDS ingestion from Track().
 // CameraStatsLogger: per-second per-camera diagnostic ladder — same one-line
 //                    format as the Python node so the two nodes' logs are
 //                    directly comparable.
-//
-// All methods are inline so this header has no companion .cpp and can be
-// included by multiple translation units without ODR violations.
 #pragma once
 
 #include <algorithm>
@@ -26,6 +26,29 @@ namespace rena_cuvslam {
 
 using ResultCallback =
     std::function<void(int64_t timestamp_ns, const RosPose& pose)>;
+
+// ---------------------------------------------------------------------------
+// OakCameraConfig / load_base_oak_cameras()
+// One base OAK camera block from /etc/rena/config.yaml. Both trackers place
+// the (left) camera by the rig block; only the stereo tracker consumes the
+// stereo_extrinsic (right_from_left) block.
+// ---------------------------------------------------------------------------
+struct OakCameraConfig {
+  std::string key;
+  std::string serial_no;
+  double roll_deg = 0.0;
+  double pitch_deg = 0.0;
+  double yaw_deg = 0.0;
+  Vec3 translation = {0.0, 0.0, 0.0};
+  bool has_stereo_extrinsic = false;
+  Quat right_from_left_rot = {0.0, 0.0, 0.0, 1.0};  // (x, y, z, w)
+  Vec3 right_from_left_trans = {0.0, 0.0, 0.0};
+};
+
+// Parse the base OAK cameras (base.cameras, type: oak) from
+// /etc/rena/config.yaml. Throws std::runtime_error if none are found, a key
+// is missing or duplicated, or a rig / stereo_extrinsic block is malformed.
+std::vector<OakCameraConfig> load_base_oak_cameras();
 
 // ---------------------------------------------------------------------------
 // LatestSlot<T>

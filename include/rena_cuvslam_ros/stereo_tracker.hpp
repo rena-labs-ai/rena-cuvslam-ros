@@ -1,11 +1,12 @@
 // OAK stereo cuVSLAM tracker (C++ port of rena_cuvslam_ros.RosOakStereoTracker).
 //
 // Drives the cuVSLAM C++ API in Stereo mode — no depths, left+right MONO8
-// images per OAK camera. Reads ALL OAK cameras (any robot_part) from
-// /etc/rena/config.yaml, whereas RgbdTracker reads only the base cameras.
+// images per OAK camera. Reads the base OAK cameras from
+// /etc/rena/config.yaml, same as RgbdTracker (single or multi-camera).
 //
 // Rig layout per OAK i: [left_i, right_i] → cameras order [l0,r0,l1,r1,...].
-// right_from_left extrinsic comes from stereo_extrinsic in config.yaml.
+// right_from_left extrinsic comes from stereo_extrinsic in config.yaml
+// (required — it carries the raw stereo baseline).
 //
 // Ingestion uses the same LatestSlot + dedicated track thread split as
 // RgbdTracker so DDS is drained at full camera rate independently of Track().
@@ -36,21 +37,12 @@ class Slam;
 
 namespace rena_cuvslam {
 
-// One OAK camera (any robot_part) from /etc/rena/config.yaml.
-struct StereoEntry {
-  std::string key;
-  std::string serial_no;
-  std::string robot_part;
+// One base OAK stereo camera: shared config block + the left/right topics.
+struct StereoEntry : OakCameraConfig {
   std::string left_topic;
   std::string right_topic;
   std::string left_info_topic;
   std::string right_info_topic;
-  double roll_deg = 0.0;
-  double pitch_deg = 0.0;
-  double yaw_deg = 0.0;
-  Vec3 translation = {0.0, 0.0, 0.0};
-  Quat right_from_left_rot = {0.0, 0.0, 0.0, 1.0};  // (x, y, z, w)
-  Vec3 right_from_left_trans = {0.0, 0.0, 0.0};
 };
 
 class StereoTracker {

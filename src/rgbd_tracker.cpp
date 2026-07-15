@@ -6,8 +6,6 @@
 #include <functional>
 #include <stdexcept>
 
-#include <yaml-cpp/yaml.h>
-
 #include "cuvslam2.h"
 
 using namespace std::chrono_literals;
@@ -15,7 +13,6 @@ using namespace std::chrono_literals;
 namespace rena_cuvslam {
 namespace {
 
-constexpr char kConfigPath[] = "/etc/rena/config.yaml";
 constexpr int64_t kSlopNs = 5'000'000;  // SLOP_SEC = 0.005 s
 constexpr int kSyncQueue = 10;   // per-topic buffer for ApproximateTime matching
 constexpr double kCameraInfoTimeoutS = 30.0;
@@ -87,38 +84,19 @@ RgbdTracker::RgbdTracker(rclcpp::Node::SharedPtr node, double depth_scale, bool 
 RgbdTracker::~RgbdTracker() { shutdown(); }
 
 void RgbdTracker::load_config() {
-  YAML::Node root = YAML::LoadFile(kConfigPath);
-  const YAML::Node base = root["base"];
-  if (!base || !base["cameras"]) {
+  auto cams = load_base_oak_cameras();
+  if (cams.size() > 2) {
     throw std::runtime_error(
-        "RgbdTracker: no base.cameras in " + std::string(kConfigPath));
+        "rena_cuvslam_ros supports 1 or 2 base OAK cameras "
+        "(ApproximateTime arity is compile-time); got " +
+        std::to_string(cams.size()));
   }
-  for (const auto& cam : base["cameras"]) {
-    if (!cam["type"] || cam["type"].as<std::string>() != "oak") continue;
-    CameraEntry e;
-    e.key = cam["key"] ? cam["key"].as<std::string>() : "";
-    e.serial_no = cam["serial_no"] ? cam["serial_no"].as<std::string>() : "";
-    const std::string ns = "/base/" + e.key;
-    e.color_topic = ns + "/rgb/image_raw";
-    e.depth_topic = ns + "/stereo/image_raw";
-    e.info_topic = ns + "/rgb/camera_info";
-    if (const YAML::Node rig = cam["rig"]) {
-      if (const YAML::Node t = rig["translation"]) {
-        if (t.size() != 3)
-          throw std::runtime_error("rig.translation must have 3 elements for " + e.key);
-        e.translation = {t[0].as<double>(), t[1].as<double>(), t[2].as<double>()};
-      }
-      if (const YAML::Node r = rig["rotation"]) {
-        e.roll_deg = r["roll"] ? r["roll"].as<double>() : 0.0;
-        e.pitch_deg = r["pitch"] ? r["pitch"].as<double>() : 0.0;
-        e.yaw_deg = r["yaw"] ? r["yaw"].as<double>() : 0.0;
-      }
-    }
-    entries_.push_back(std::move(e));
-  }
-  if (entries_.empty()) {
-    throw std::runtime_error(
-        "RgbdTracker: no base OAK camera in " + std::string(kConfigPath));
+  for (auto& cam : cams) {
+    const std::string ns = "/base/" + cam.key;
+    entries_.push_back(CameraEntry{std::move(cam),
+                                   ns + "/rgb/image_raw",
+                                   ns + "/stereo/image_raw",
+                                   ns + "/rgb/camera_info"});
   }
 
   const int n = static_cast<int>(entries_.size());
@@ -265,12 +243,7 @@ void RgbdTracker::build_rig_and_tracker() {
 }
 
 void RgbdTracker::start_streaming() {
-  const int n = static_cast<int>(entries_.size());
-  if (n > 2) {
-    throw std::runtime_error(
-        "rena_cuvslam_ros supports 1 or 2 base OAK cameras "
-        "(ApproximateTime arity is compile-time); got " + std::to_string(n));
-  }
+  const int n = static_cast<int>(entries_.size());  // 1 or 2, enforced in load_config()
   stats_ = std::make_unique<CameraStatsLogger>(node_->get_logger(), tag_, n, debug_);
 
   // Reentrant group so a MultiThreadedExecutor drains every stream concurrently

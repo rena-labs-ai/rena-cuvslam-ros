@@ -8,7 +8,7 @@ full 30 fps.
 Supports two tracker modes selectable at launch time:
 
 - **`rgbd`** (default) — RGB-D odometry using base OAK RGB + depth
-- **`stereo`** — stereo odometry using all OAK cameras (left + right)
+- **`stereo`** — stereo odometry using base OAK cameras (raw left + right)
 
 ## Layout
 
@@ -16,11 +16,12 @@ Supports two tracker modes selectable at launch time:
 src/
   rgbd_tracker.cpp      # RGBD path: ApproximateTime sync, zero-copy Track()
   stereo_tracker.cpp    # Stereo path: same sync structure, MONO8 images
+  tracker_common.cpp    # Shared /etc/rena/config.yaml base-camera parsing
   vslam_node.cpp        # ROS node: odometry publisher + TF broadcaster
 include/rena_cuvslam_ros/
   rgbd_tracker.hpp
   stereo_tracker.hpp
-  tracker_common.hpp    # LatestSlot<T> + CameraStatsLogger (shared, inline)
+  tracker_common.hpp    # OakCameraConfig + LatestSlot<T> + CameraStatsLogger
   frame_conversions.hpp # cuVSLAM optical <-> ROS frame math (pure, no deps)
 launch/
   cuvslam.launch.py
@@ -69,6 +70,6 @@ ros2 launch rena_cuvslam_ros cuvslam.launch.py tracker:=stereo
 topic and computes ATE. Runs standalone (source ROS, no package install needed):
 
 ```bash
-python3 .maps/vslam_plot.py --ref /Odometry --est /cuvslam/odometry \
+python3 .maps/vslam_plot.py --ref /base/drive_controller/odom --est /cuvslam/odometry \
     --out ./vslam_plot.png --update-interval 5.0
 ```

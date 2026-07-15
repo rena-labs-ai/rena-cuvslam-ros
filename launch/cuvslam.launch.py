@@ -1,8 +1,9 @@
 """Launch the C++ cuVSLAM odometry node (rena_cuvslam_ros).
 
-Supports both tracker modes:
-  tracker:=rgbd    (default) — RGBD odometry, base OAK cameras only
-  tracker:=stereo            — Stereo odometry, all OAK cameras
+Supports both tracker modes (both read the base OAK cameras from
+/etc/rena/config.yaml, single or multi-camera):
+  tracker:=rgbd    (default) — RGBD odometry (color + aligned depth)
+  tracker:=stereo            — Stereo odometry (raw left + right mono)
 
 Assumes the OAK camera nodes are already running. Topics and rig extrinsics
 are derived inside the node from /etc/rena/config.yaml.
@@ -78,8 +79,8 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "tracker",
                 default_value="rgbd",
-                description="Tracker mode: 'rgbd' (base OAK cameras, RGB-D) or "
-                "'stereo' (all OAK cameras, stereo).",
+                description="Tracker mode: 'rgbd' (color + aligned depth) or "
+                "'stereo' (raw left/right mono); both use the base OAK cameras.",
             ),
             DeclareLaunchArgument(
                 "depth_scale",

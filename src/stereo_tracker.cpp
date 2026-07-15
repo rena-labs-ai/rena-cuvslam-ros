@@ -6,8 +6,6 @@
 #include <functional>
 #include <stdexcept>
 
-#include <yaml-cpp/yaml.h>
-
 #include "cuvslam2.h"
 
 using namespace std::chrono_literals;
@@ -15,9 +13,8 @@ using namespace std::chrono_literals;
 namespace rena_cuvslam {
 namespace {
 
-constexpr char kConfigPath[] = "/etc/rena/config.yaml";
-constexpr int64_t kSlopNs = 66'000'000;  // SLOP_SEC = 0.066 s
-constexpr int kSyncQueue = 10;            // per-topic buffer for ApproximateTime
+constexpr int64_t kSlopNs = 5'000'000;  // SLOP_SEC = 0.005 s (same as RGBD)
+constexpr int kSyncQueue = 10;          // per-topic buffer for ApproximateTime
 constexpr double kCameraInfoTimeoutS = 30.0;
 
 inline int64_t stamp_ns(const sensor_msgs::msg::Image& m) {
@@ -59,68 +56,21 @@ StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool debug)
 StereoTracker::~StereoTracker() { shutdown(); }
 
 void StereoTracker::load_config() {
-  YAML::Node root = YAML::LoadFile(kConfigPath);
-
-  // Iterate ALL top-level robot_part sections (base, rear, …) — unlike the
-  // RGBD tracker which reads only "base".
-  for (const auto& part_kv : root) {
-    const std::string robot_part = part_kv.first.as<std::string>();
-    const YAML::Node& part = part_kv.second;
-    if (!part || !part["cameras"]) continue;
-
-    for (const auto& cam : part["cameras"]) {
-      if (!cam["type"] || cam["type"].as<std::string>() != "oak") continue;
-
-      StereoEntry e;
-      e.key = cam["key"] ? cam["key"].as<std::string>() : "";
-      e.serial_no = cam["serial_no"] ? cam["serial_no"].as<std::string>() : "";
-      e.robot_part = robot_part;
-
-      const std::string ns = "/" + robot_part + "/" + e.key;
-      e.left_topic = ns + "/left/image_raw";
-      e.right_topic = ns + "/right/image_raw";
-      e.left_info_topic = ns + "/left/camera_info";
-      e.right_info_topic = ns + "/right/camera_info";
-
-      if (const YAML::Node rig = cam["rig"]) {
-        if (const YAML::Node t = rig["translation"]) {
-          if (t.size() != 3)
-            throw std::runtime_error(
-                "rig.translation must have 3 elements for " + e.key);
-          e.translation = {t[0].as<double>(), t[1].as<double>(), t[2].as<double>()};
-        }
-        if (const YAML::Node r = rig["rotation"]) {
-          e.roll_deg = r["roll"] ? r["roll"].as<double>() : 0.0;
-          e.pitch_deg = r["pitch"] ? r["pitch"].as<double>() : 0.0;
-          e.yaw_deg = r["yaw"] ? r["yaw"].as<double>() : 0.0;
-        }
-      }
-
-      if (const YAML::Node ext = cam["stereo_extrinsic"]) {
-        if (const YAML::Node r = ext["rotation"]) {
-          if (r.size() != 4)
-            throw std::runtime_error(
-                "stereo_extrinsic.rotation must have 4 elements for " + e.key);
-          // Config order: [qx, qy, qz, qw]
-          e.right_from_left_rot = {r[0].as<double>(), r[1].as<double>(),
-                                   r[2].as<double>(), r[3].as<double>()};
-        }
-        if (const YAML::Node t = ext["translation"]) {
-          if (t.size() != 3)
-            throw std::runtime_error(
-                "stereo_extrinsic.translation must have 3 elements for " + e.key);
-          e.right_from_left_trans = {t[0].as<double>(), t[1].as<double>(),
-                                     t[2].as<double>()};
-        }
-      }
-
-      entries_.push_back(std::move(e));
+  for (auto& cam : load_base_oak_cameras()) {
+    // cuVSLAM tracks the raw pair, so it needs the true L<->R rigid transform
+    // (baseline + small mount rotation), not just a scalar baseline.
+    if (!cam.has_stereo_extrinsic) {
+      throw std::runtime_error(
+          "StereoTracker: OAK " + cam.serial_no + " (base/" + cam.key +
+          ") is missing its stereo_extrinsic block (right_from_left) in "
+          "/etc/rena/config.yaml, required for the raw stereo baseline");
     }
-  }
-
-  if (entries_.empty()) {
-    throw std::runtime_error(
-        "StereoTracker: no OAK cameras found in " + std::string(kConfigPath));
+    const std::string ns = "/base/" + cam.key;
+    entries_.push_back(StereoEntry{std::move(cam),
+                                   ns + "/left/image_raw",
+                                   ns + "/right/image_raw",
+                                   ns + "/left/camera_info",
+                                   ns + "/right/camera_info"});
   }
 
   const int n = static_cast<int>(entries_.size());
@@ -129,8 +79,8 @@ void StereoTracker::load_config() {
   for (int i = 0; i < n; ++i) {
     const auto& e = entries_[i];
     RCLCPP_INFO(node_->get_logger(),
-                "  cam%d: serial=%s %s/%s\n    left:  %s\n    right: %s", i,
-                e.serial_no.c_str(), e.robot_part.c_str(), e.key.c_str(),
+                "  cam%d: serial=%s base/%s\n    left:  %s\n    right: %s", i,
+                e.serial_no.c_str(), e.key.c_str(),
                 e.left_topic.c_str(), e.right_topic.c_str());
   }
 }
@@ -238,18 +188,18 @@ void StereoTracker::build_rig_and_tracker() {
 
     RCLCPP_INFO(
         node_->get_logger(),
-        "[%s] cam%zu %s/%s left: size=%dx%d focal=(%.2f,%.2f) "
+        "[%s] cam%zu base/%s left: size=%dx%d focal=(%.2f,%.2f) "
         "rig_t=(%.4f,%.4f,%.4f)",
-        tag_.c_str(), i, e.robot_part.c_str(), e.key.c_str(),
+        tag_.c_str(), i, e.key.c_str(),
         cam_left.size[0], cam_left.size[1], cam_left.focal[0], cam_left.focal[1],
         cam_left.rig_from_camera.translation[0],
         cam_left.rig_from_camera.translation[1],
         cam_left.rig_from_camera.translation[2]);
     RCLCPP_INFO(
         node_->get_logger(),
-        "[%s] cam%zu %s/%s right: size=%dx%d focal=(%.2f,%.2f) "
+        "[%s] cam%zu base/%s right: size=%dx%d focal=(%.2f,%.2f) "
         "rig_t=(%.4f,%.4f,%.4f)",
-        tag_.c_str(), i, e.robot_part.c_str(), e.key.c_str(),
+        tag_.c_str(), i, e.key.c_str(),
         cam_right.size[0], cam_right.size[1], cam_right.focal[0],
         cam_right.focal[1], cam_right.rig_from_camera.translation[0],
         cam_right.rig_from_camera.translation[1],

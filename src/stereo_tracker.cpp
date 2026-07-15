@@ -56,7 +56,14 @@ StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool debug)
 StereoTracker::~StereoTracker() { shutdown(); }
 
 void StereoTracker::load_config() {
-  for (auto& cam : load_base_oak_cameras()) {
+  auto cams = load_base_oak_cameras();
+  if (cams.size() > 2) {
+    throw std::runtime_error(
+        "rena_cuvslam_ros StereoTracker supports 1 or 2 OAK cameras "
+        "(ApproximateTime arity is compile-time); got " +
+        std::to_string(cams.size()));
+  }
+  for (auto& cam : cams) {
     // cuVSLAM tracks the raw pair, so it needs the true L<->R rigid transform
     // (baseline + small mount rotation), not just a scalar baseline.
     if (!cam.has_stereo_extrinsic) {
@@ -237,12 +244,7 @@ void StereoTracker::build_rig_and_tracker() {
 }
 
 void StereoTracker::start_streaming() {
-  const int n = static_cast<int>(entries_.size());
-  if (n > 2) {
-    throw std::runtime_error(
-        "rena_cuvslam_ros StereoTracker supports 1 or 2 OAK cameras "
-        "(ApproximateTime arity is compile-time); got " + std::to_string(n));
-  }
+  const int n = static_cast<int>(entries_.size());  // 1 or 2, enforced in load_config()
   stats_ = std::make_unique<CameraStatsLogger>(node_->get_logger(), tag_, n, debug_);
 
   cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);

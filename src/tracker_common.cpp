@@ -24,6 +24,17 @@ std::vector<OakCameraConfig> load_base_oak_cameras() {
     OakCameraConfig c;
     c.key = cam["key"] ? cam["key"].as<std::string>() : "";
     c.serial_no = cam["serial_no"] ? cam["serial_no"].as<std::string>() : "";
+    // Topics are derived as /base/<key>/..., so an empty or duplicate key
+    // yields malformed topics or two rig entries eating the same streams.
+    if (c.key.empty()) {
+      throw std::runtime_error("base OAK camera (serial '" + c.serial_no +
+                               "') has no key in " + std::string(kConfigPath));
+    }
+    for (const auto& prev : out) {
+      if (prev.key == c.key)
+        throw std::runtime_error("duplicate base OAK camera key '" + c.key +
+                                 "' in " + std::string(kConfigPath));
+    }
 
     if (const YAML::Node rig = cam["rig"]) {
       if (const YAML::Node t = rig["translation"]) {

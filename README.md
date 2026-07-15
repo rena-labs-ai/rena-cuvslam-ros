@@ -70,6 +70,6 @@ ros2 launch rena_cuvslam_ros cuvslam.launch.py tracker:=stereo
 topic and computes ATE. Runs standalone (source ROS, no package install needed):
 
 ```bash
-python3 .maps/vslam_plot.py --ref /Odometry --est /cuvslam/odometry \
+python3 .maps/vslam_plot.py --ref /base/drive_controller/odom --est /cuvslam/odometry \
     --out ./vslam_plot.png --update-interval 5.0
 ```

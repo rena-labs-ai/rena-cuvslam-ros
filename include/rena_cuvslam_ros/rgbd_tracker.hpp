@@ -95,6 +95,9 @@ class RgbdTracker {
 
   std::vector<CameraEntry> entries_;
   std::vector<sensor_msgs::msg::CameraInfo> camera_infos_;
+  // Which cameras contribute depth ICP (RENA_RGBD_DEPTH_KEYS diagnostic
+  // filter; all true by default). All cameras always contribute 2D tracking.
+  std::vector<bool> depth_enabled_;
 
   std::unique_ptr<cuvslam::Odometry> odom_;
   std::unique_ptr<cuvslam::Slam> slam_;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <stdexcept>
@@ -207,14 +208,36 @@ void RgbdTracker::build_rig_and_tracker() {
   // that trims the >33 ms Track() tail with zero effect on odometry/SLAM output.
   ocfg.enable_final_landmarks_export = false;
 
+  // RENA_RGBD_DEPTH_KEYS: comma-separated camera keys whose depth feeds the
+  // ICP (diagnostic filter, e.g. "front"). Unset/empty = all cameras. Every
+  // camera still contributes 2D feature tracking either way.
+  depth_enabled_.assign(entries_.size(), true);
+  if (const char* env = std::getenv("RENA_RGBD_DEPTH_KEYS"); env && *env) {
+    const std::string keys = std::string(",") + env + ",";
+    for (size_t i = 0; i < entries_.size(); ++i)
+      depth_enabled_[i] =
+          keys.find("," + entries_[i].key + ",") != std::string::npos;
+    if (std::none_of(depth_enabled_.begin(), depth_enabled_.end(),
+                     [](bool b) { return b; }))
+      throw std::runtime_error(
+          "RENA_RGBD_DEPTH_KEYS='" + std::string(env) +
+          "' matches no base camera key; RGBD needs at least one depth source");
+    for (size_t i = 0; i < entries_.size(); ++i)
+      RCLCPP_WARN(node_->get_logger(), "[%s] depth ICP %s for cam%zu base/%s",
+                  tag_.c_str(), depth_enabled_[i] ? "ENABLED" : "DISABLED", i,
+                  entries_[i].key.c_str());
+  }
+
   const float scale_factor = static_cast<float>(1.0 / depth_scale_);
   ocfg.rgbd_settings.enable_depth_stereo_tracking = false;
   if (entries_.size() == 1) {
     ocfg.rgbd_settings.depth_camera_id = 0;
     ocfg.rgbd_settings.depth_scale_factor = scale_factor;
   } else {
-    // Multi-camera: one depth source per rig camera (cuVSLAM#3 multi-depth ICP).
+    // Multi-camera: one depth source per depth-enabled rig camera
+    // (cuVSLAM#3 multi-depth ICP).
     for (size_t i = 0; i < entries_.size(); ++i) {
+      if (!depth_enabled_[i]) continue;
       cuvslam::Odometry::RGBDSettings::DepthCameraSettings d;
       d.camera_id = static_cast<int32_t>(i);
       d.depth_scale_factor = scale_factor;
@@ -339,13 +362,14 @@ void RgbdTracker::track_loop() {
         ok = false;
         break;
       }
+      images.push_back(color);
+      if (!depth_enabled_[i]) continue;  // camera excluded from depth ICP
       if (!fill_depth_image(depth, *set.depths[i], set.ts, i)) {
         RCLCPP_WARN(node_->get_logger(), "[%s] bad depth encoding '%s' on cam%u",
                     tag_.c_str(), set.depths[i]->encoding.c_str(), i);
         ok = false;
         break;
       }
-      images.push_back(color);
       depths.push_back(depth);
     }
     if (!ok) continue;
@@ -381,10 +405,17 @@ void RgbdTracker::track_loop() {
     stats_->record_track(track_ms);
 
     if (have_slam && on_result_) {
-      const Quat q = {slam_pose.rotation[0], slam_pose.rotation[1],
-                      slam_pose.rotation[2], slam_pose.rotation[3]};
-      const Vec3 t = {slam_pose.translation[0], slam_pose.translation[1],
-                      slam_pose.translation[2]};
+      // RENA_PUBLISH_RAW_VO: publish the raw odometry pose instead of the
+      // SLAM pose — diagnostic to separate VO drift from SLAM corrections.
+      static const bool raw_vo = [] {
+        const char* env = std::getenv("RENA_PUBLISH_RAW_VO");
+        return env && *env && std::string(env) != "0";
+      }();
+      const cuvslam::Pose& out = raw_vo ? pe.world_from_rig->pose : slam_pose;
+      const Quat q = {out.rotation[0], out.rotation[1],
+                      out.rotation[2], out.rotation[3]};
+      const Vec3 t = {out.translation[0], out.translation[1],
+                      out.translation[2]};
       on_result_(set.ts, to_robot_frame(q, t));
     }
   }

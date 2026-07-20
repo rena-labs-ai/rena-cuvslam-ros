@@ -1,6 +1,7 @@
 // Shared /etc/rena/config.yaml parsing for the RGBD and Stereo trackers.
 #include "rena_cuvslam_ros/tracker_common.hpp"
 
+#include <cstdlib>
 #include <stdexcept>
 
 #include <yaml-cpp/yaml.h>
@@ -8,13 +9,21 @@
 namespace rena_cuvslam {
 namespace {
 constexpr char kConfigPath[] = "/etc/rena/config.yaml";
+
+// RENA_CONFIG_PATH overrides the robot config, e.g. to replay a bag against a
+// reduced camera set without touching /etc/rena/config.yaml.
+std::string config_path() {
+  const char* env = std::getenv("RENA_CONFIG_PATH");
+  return (env && *env) ? env : kConfigPath;
+}
 }  // namespace
 
 std::vector<OakCameraConfig> load_base_oak_cameras() {
-  YAML::Node root = YAML::LoadFile(kConfigPath);
+  const std::string path = config_path();
+  YAML::Node root = YAML::LoadFile(path);
   const YAML::Node base = root["base"];
   if (!base || !base["cameras"]) {
-    throw std::runtime_error("no base.cameras in " + std::string(kConfigPath));
+    throw std::runtime_error("no base.cameras in " + path);
   }
 
   std::vector<OakCameraConfig> out;
@@ -28,12 +37,12 @@ std::vector<OakCameraConfig> load_base_oak_cameras() {
     // yields malformed topics or two rig entries eating the same streams.
     if (c.key.empty()) {
       throw std::runtime_error("base OAK camera (serial '" + c.serial_no +
-                               "') has no key in " + std::string(kConfigPath));
+                               "') has no key in " + path);
     }
     for (const auto& prev : out) {
       if (prev.key == c.key)
         throw std::runtime_error("duplicate base OAK camera key '" + c.key +
-                                 "' in " + std::string(kConfigPath));
+                                 "' in " + path);
     }
 
     if (const YAML::Node rig = cam["rig"]) {
@@ -71,7 +80,7 @@ std::vector<OakCameraConfig> load_base_oak_cameras() {
   }
 
   if (out.empty()) {
-    throw std::runtime_error("no base OAK camera in " + std::string(kConfigPath));
+    throw std::runtime_error("no base OAK camera in " + path);
   }
   return out;
 }

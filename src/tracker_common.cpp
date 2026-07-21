@@ -1,6 +1,7 @@
 // Shared /etc/rena/config.yaml parsing for the RGBD and Stereo trackers.
 #include "rena_cuvslam_ros/tracker_common.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 #include <yaml-cpp/yaml.h>
@@ -10,7 +11,8 @@ namespace {
 constexpr char kConfigPath[] = "/etc/rena/config.yaml";
 }  // namespace
 
-std::vector<OakCameraConfig> load_base_oak_cameras() {
+std::vector<OakCameraConfig> load_base_oak_cameras(
+    const std::vector<std::string>& keys) {
   YAML::Node root = YAML::LoadFile(kConfigPath);
   const YAML::Node base = root["base"];
   if (!base || !base["cameras"]) {
@@ -73,7 +75,20 @@ std::vector<OakCameraConfig> load_base_oak_cameras() {
   if (out.empty()) {
     throw std::runtime_error("no base OAK camera in " + std::string(kConfigPath));
   }
-  return out;
+  if (keys.empty()) return out;
+
+  std::vector<OakCameraConfig> selected;
+  for (const auto& key : keys) {
+    auto it = std::find_if(out.begin(), out.end(),
+                           [&key](const OakCameraConfig& c) { return c.key == key; });
+    if (it == out.end()) {
+      throw std::runtime_error("requested camera key '" + key + "' not in " +
+                               std::string(kConfigPath));
+    }
+    selected.push_back(std::move(*it));
+    out.erase(it);
+  }
+  return selected;
 }
 
 }  // namespace rena_cuvslam

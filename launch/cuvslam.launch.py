@@ -38,6 +38,7 @@ def _launch_setup(context, *args, **kwargs):
                     "debug": debug,
                     "tracker": LaunchConfiguration("tracker"),
                     "depth_scale": depth_scale,
+                    "cameras": context.launch_configurations.get("cameras", ""),
                 }
             ],
             remappings=[("/cuvslam/odometry", odom_topic)],
@@ -87,6 +88,12 @@ def generate_launch_description():
                 default_value="0.001",
                 description="Depth scale factor for RGBD mode (meters per raw depth unit; "
                 "0.001 = mm -> m). Ignored in stereo mode.",
+            ),
+            DeclareLaunchArgument(
+                "cameras",
+                default_value="",
+                description="Comma-separated base OAK keys to track (e.g. 'front'); "
+                "empty = all base OAK cameras in /etc/rena/config.yaml.",
             ),
             OpaqueFunction(function=_launch_setup),
         ]

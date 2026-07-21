@@ -51,7 +51,8 @@ struct CameraEntry : OakCameraConfig {
 
 class RgbdTracker {
  public:
-  RgbdTracker(rclcpp::Node::SharedPtr node, double depth_scale, bool debug);
+  RgbdTracker(rclcpp::Node::SharedPtr node, double depth_scale, bool debug,
+              std::vector<std::string> camera_keys = {});
   ~RgbdTracker();
 
   void set_result_callback(ResultCallback cb) { on_result_ = std::move(cb); }
@@ -91,6 +92,7 @@ class RgbdTracker {
   rclcpp::Node::SharedPtr node_;
   double depth_scale_;
   bool debug_;
+  std::vector<std::string> camera_keys_;  // empty = all base OAKs
   std::string tag_ = "rgbd";
 
   std::vector<CameraEntry> entries_;

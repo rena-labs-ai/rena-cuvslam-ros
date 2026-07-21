@@ -46,9 +46,12 @@ struct OakCameraConfig {
 };
 
 // Parse the base OAK cameras (base.cameras, type: oak) from
-// /etc/rena/config.yaml. Throws std::runtime_error if none are found, a key
-// is missing or duplicated, or a rig / stereo_extrinsic block is malformed.
-std::vector<OakCameraConfig> load_base_oak_cameras();
+// /etc/rena/config.yaml. A non-empty `keys` selects that subset, in that
+// order (commissioning runs the tracker per camera). Throws
+// std::runtime_error if none are found, a key is missing, duplicated, or
+// requested but absent, or a rig / stereo_extrinsic block is malformed.
+std::vector<OakCameraConfig> load_base_oak_cameras(
+    const std::vector<std::string>& keys = {});
 
 // ---------------------------------------------------------------------------
 // LatestSlot<T>

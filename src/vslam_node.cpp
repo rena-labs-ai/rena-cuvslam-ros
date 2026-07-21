@@ -10,6 +10,9 @@
 // stamp nvblox looks up at depth time.
 #include <cmath>
 #include <memory>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -24,6 +27,18 @@
 namespace {
 constexpr char kOdomTopic[] = "/cuvslam/odometry";
 constexpr char kOdomFrame[] = "odom";
+
+std::vector<std::string> parse_camera_keys(const std::string& csv) {
+  std::vector<std::string> keys;
+  std::stringstream ss(csv);
+  std::string item;
+  while (std::getline(ss, item, ',')) {
+    const auto begin = item.find_first_not_of(" \t");
+    if (begin == std::string::npos) continue;
+    keys.push_back(item.substr(begin, item.find_last_not_of(" \t") - begin + 1));
+  }
+  return keys;
+}
 }  // namespace
 
 namespace rena_cuvslam {
@@ -37,6 +52,8 @@ class VslamNode : public rclcpp::Node {
     debug_ = declare_parameter<bool>("debug", false);
     depth_scale_ = declare_parameter<double>("depth_scale", 0.001);
     declare_parameter<std::string>("tracker", "rgbd");
+    // Comma-separated base OAK keys to track (e.g. "front"); empty = all.
+    declare_parameter<std::string>("cameras", "");
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(kOdomTopic, 10);
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -54,8 +71,10 @@ class VslamNode : public rclcpp::Node {
     static_broadcaster_->sendTransform(st);
 
     const std::string tracker = get_parameter("tracker").as_string();
+    const auto camera_keys = parse_camera_keys(get_parameter("cameras").as_string());
     if (tracker == "stereo") {
-      stereo_tracker_ = std::make_unique<StereoTracker>(shared_from_this(), debug_);
+      stereo_tracker_ =
+          std::make_unique<StereoTracker>(shared_from_this(), debug_, camera_keys);
       stereo_tracker_->set_result_callback(
           [this](int64_t ts, const RosPose& pose) { publish(ts, pose); });
       stereo_tracker_->initialize();
@@ -65,7 +84,8 @@ class VslamNode : public rclcpp::Node {
                     "Unknown tracker='%s'; falling back to rgbd",
                     tracker.c_str());
       }
-      tracker_ = std::make_unique<RgbdTracker>(shared_from_this(), depth_scale_, debug_);
+      tracker_ = std::make_unique<RgbdTracker>(shared_from_this(), depth_scale_,
+                                               debug_, camera_keys);
       tracker_->set_result_callback(
           [this](int64_t ts, const RosPose& pose) { publish(ts, pose); });
       tracker_->initialize();

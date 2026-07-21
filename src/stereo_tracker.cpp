@@ -50,13 +50,14 @@ bool fill_mono_image(cuvslam::Image& img, const sensor_msgs::msg::Image& msg,
 
 // ------------------------------- StereoTracker ------------------------------
 
-StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool debug)
-    : node_(std::move(node)), debug_(debug) {}
+StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool debug,
+                             std::vector<std::string> camera_keys)
+    : node_(std::move(node)), debug_(debug), camera_keys_(std::move(camera_keys)) {}
 
 StereoTracker::~StereoTracker() { shutdown(); }
 
 void StereoTracker::load_config() {
-  auto cams = load_base_oak_cameras();
+  auto cams = load_base_oak_cameras(camera_keys_);
   if (cams.size() > 2) {
     throw std::runtime_error(
         "rena_cuvslam_ros StereoTracker supports 1 or 2 OAK cameras "

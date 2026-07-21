@@ -47,7 +47,8 @@ struct StereoEntry : OakCameraConfig {
 
 class StereoTracker {
  public:
-  StereoTracker(rclcpp::Node::SharedPtr node, bool debug);
+  StereoTracker(rclcpp::Node::SharedPtr node, bool debug,
+                std::vector<std::string> camera_keys = {});
   ~StereoTracker();
 
   void set_result_callback(ResultCallback cb) { on_result_ = std::move(cb); }
@@ -90,6 +91,7 @@ class StereoTracker {
 
   rclcpp::Node::SharedPtr node_;
   bool debug_;
+  std::vector<std::string> camera_keys_;  // empty = all base OAKs
   std::string tag_ = "stereo";
 
   std::vector<StereoEntry> entries_;

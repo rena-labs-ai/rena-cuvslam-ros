@@ -78,13 +78,17 @@ bool fill_depth_image(cuvslam::Image& img, const sensor_msgs::msg::Image& msg,
 
 // ------------------------------- RgbdTracker --------------------------------
 
-RgbdTracker::RgbdTracker(rclcpp::Node::SharedPtr node, double depth_scale, bool debug)
-    : node_(std::move(node)), depth_scale_(depth_scale), debug_(debug) {}
+RgbdTracker::RgbdTracker(rclcpp::Node::SharedPtr node, double depth_scale, bool debug,
+                         std::vector<std::string> camera_keys)
+    : node_(std::move(node)),
+      depth_scale_(depth_scale),
+      debug_(debug),
+      camera_keys_(std::move(camera_keys)) {}
 
 RgbdTracker::~RgbdTracker() { shutdown(); }
 
 void RgbdTracker::load_config() {
-  auto cams = load_base_oak_cameras();
+  auto cams = load_base_oak_cameras(camera_keys_);
   if (cams.size() > 2) {
     throw std::runtime_error(
         "rena_cuvslam_ros supports 1 or 2 base OAK cameras "

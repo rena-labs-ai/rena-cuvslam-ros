@@ -208,10 +208,22 @@ void RgbdTracker::build_rig_and_tracker() {
   // that trims the >33 ms Track() tail with zero effect on odometry/SLAM output.
   ocfg.enable_final_landmarks_export = false;
 
-  // RENA_RGBD_DEPTH_KEYS: comma-separated camera keys whose depth feeds the
-  // ICP (diagnostic filter, e.g. "front"). Unset/empty = all cameras. Every
-  // camera still contributes 2D feature tracking either way.
-  depth_enabled_.assign(entries_.size(), true);
+  // Depth-camera selection for the multi-depth ICP. DEFAULT: "back" only.
+  // Fusing both front and back depth degrades the solve (rena-06: back-only
+  // depth tracks multi-stereo at ~0.2 m, fusing both drifts to ~0.8 m); the
+  // front depth is the weaker member. Every camera still contributes 2D
+  // feature tracking regardless. Override the selection with
+  // RENA_RGBD_DEPTH_KEYS (comma-separated camera keys, e.g. "front,back" to
+  // fuse all, "front" for front-only).
+  depth_enabled_.assign(entries_.size(), false);
+  for (size_t i = 0; i < entries_.size(); ++i)
+    if (entries_[i].key == "back") depth_enabled_[i] = true;
+  // No "back" camera on this rig (e.g. a differently-keyed or single OAK):
+  // fall back to all-enabled so RGBD never ends up with no depth source.
+  if (std::none_of(depth_enabled_.begin(), depth_enabled_.end(),
+                   [](bool b) { return b; }))
+    depth_enabled_.assign(entries_.size(), true);
+
   if (const char* env = std::getenv("RENA_RGBD_DEPTH_KEYS"); env && *env) {
     const std::string keys = std::string(",") + env + ",";
     for (size_t i = 0; i < entries_.size(); ++i)
@@ -222,11 +234,11 @@ void RgbdTracker::build_rig_and_tracker() {
       throw std::runtime_error(
           "RENA_RGBD_DEPTH_KEYS='" + std::string(env) +
           "' matches no base camera key; RGBD needs at least one depth source");
-    for (size_t i = 0; i < entries_.size(); ++i)
-      RCLCPP_WARN(node_->get_logger(), "[%s] depth ICP %s for cam%zu base/%s",
-                  tag_.c_str(), depth_enabled_[i] ? "ENABLED" : "DISABLED", i,
-                  entries_[i].key.c_str());
   }
+  for (size_t i = 0; i < entries_.size(); ++i)
+    RCLCPP_INFO(node_->get_logger(), "[%s] depth ICP %s for cam%zu base/%s",
+                tag_.c_str(), depth_enabled_[i] ? "ENABLED" : "DISABLED", i,
+                entries_[i].key.c_str());
 
   const float scale_factor = static_cast<float>(1.0 / depth_scale_);
   ocfg.rgbd_settings.enable_depth_stereo_tracking = false;

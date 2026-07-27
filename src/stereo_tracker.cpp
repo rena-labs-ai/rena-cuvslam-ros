@@ -28,15 +28,29 @@ std::string to_lower(std::string s) {
   return s;
 }
 
-// Fill a cuVSLAM mono Image (zero-copy) from a ROS MONO8 message.
-// Returns false if the encoding is not MONO8 / 8UC1.
+// Fill a cuVSLAM mono Image from a ROS message. MONO8/8UC1 is zero-copy;
+// BGR8/RGB8 (the depthai driver replicates the IR mono channel to 3 channels)
+// extracts channel 0 into `scratch`, which must outlive the Track() call.
+// Returns false for any other encoding.
 bool fill_mono_image(cuvslam::Image& img, const sensor_msgs::msg::Image& msg,
-                     int64_t ts, uint32_t cam_index) {
+                     int64_t ts, uint32_t cam_index,
+                     std::vector<uint8_t>& scratch) {
   const std::string enc = to_lower(msg.encoding);
-  if (enc != "mono8" && enc != "8uc1") return false;
+  if (enc == "mono8" || enc == "8uc1") {
+    img.pixels = msg.data.data();
+  } else if (enc == "bgr8" || enc == "rgb8") {
+    scratch.resize(static_cast<size_t>(msg.width) * msg.height);
+    for (uint32_t row = 0; row < msg.height; ++row) {
+      const uint8_t* src = msg.data.data() + static_cast<size_t>(row) * msg.step;
+      uint8_t* dst = scratch.data() + static_cast<size_t>(row) * msg.width;
+      for (uint32_t col = 0; col < msg.width; ++col) dst[col] = src[col * 3];
+    }
+    img.pixels = scratch.data();
+  } else {
+    return false;
+  }
   img.encoding = cuvslam::ImageData::Encoding::MONO;
   img.data_type = cuvslam::ImageData::DataType::UINT8;
-  img.pixels = msg.data.data();
   img.width = static_cast<int32_t>(msg.width);
   img.height = static_cast<int32_t>(msg.height);
   img.pitch = 0;  // ignored for CPU images
@@ -324,6 +338,8 @@ void StereoTracker::emit_set(std::vector<ImageMsg::ConstSharedPtr> imgs) {
 
 void StereoTracker::track_loop() {
   const uint32_t n_imgs = static_cast<uint32_t>(entries_.size()) * 2;  // left+right per OAK
+  // Per-stream mono conversion buffers; must stay alive through Track().
+  std::vector<std::vector<uint8_t>> scratch(n_imgs);
   while (running_) {
     MatchedSet set;
     if (!track_slot_.get(set, 500ms)) continue;
@@ -334,9 +350,10 @@ void StereoTracker::track_loop() {
     bool ok = true;
     for (uint32_t idx = 0; idx < n_imgs; ++idx) {
       cuvslam::Image img;
-      if (!fill_mono_image(img, *set.images[idx], set.ts, idx)) {
+      if (!fill_mono_image(img, *set.images[idx], set.ts, idx, scratch[idx])) {
         RCLCPP_WARN(node_->get_logger(),
-                    "[%s] bad mono encoding '%s' on stream %u (expected mono8/8uc1)",
+                    "[%s] bad mono encoding '%s' on stream %u "
+                    "(expected mono8/8uc1/bgr8/rgb8)",
                     tag_.c_str(), set.images[idx]->encoding.c_str(), idx);
         ok = false;
         break;

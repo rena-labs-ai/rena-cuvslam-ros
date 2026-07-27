@@ -259,7 +259,9 @@ void StereoTracker::build_rig_and_tracker() {
 
 void StereoTracker::start_streaming() {
   const int n = static_cast<int>(entries_.size());  // 1 or 2, enforced in load_config()
-  stats_ = std::make_unique<CameraStatsLogger>(node_->get_logger(), tag_, n, debug_);
+  stats_ = std::make_unique<CameraStatsLogger>(node_->get_logger(), tag_, n, debug_,
+                                               std::array<std::string, 2>{"left", "right"},
+                                               /*show_decode=*/false);
 
   cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   rclcpp::SubscriptionOptions opts;
@@ -276,7 +278,7 @@ void StereoTracker::start_streaming() {
           node_, topic, qos, opts);
       sub->registerCallback(std::function<void(const ImageMsg::ConstSharedPtr&)>(
           [this, i, side](const ImageMsg::ConstSharedPtr&) {
-            stats_->record_raw(i, /*is_depth=*/side == 1);
+            stats_->record_raw(i, side);
           }));
       mf_subs_.push_back(std::move(sub));
       topics_log += " " + topic;
@@ -332,7 +334,6 @@ void StereoTracker::emit_set(std::vector<ImageMsg::ConstSharedPtr> imgs) {
   if (ts <= last_ts_) return;  // monotonic guard
   last_ts_ = ts;
   stats_->record_sync();
-  stats_->record_decode();  // zero-copy: "decode" == matched & enqueued
   track_slot_.put(MatchedSet{ts, std::move(imgs)});
 }
 

@@ -264,7 +264,7 @@ void RgbdTracker::start_streaming() {
       // Tap the raw stream for the per-camera counter (independent of the sync).
       sub->registerCallback(std::function<void(const ImageMsg::ConstSharedPtr&)>(
           [this, i, s](const ImageMsg::ConstSharedPtr&) {
-            stats_->record_raw(i, /*is_depth=*/s == 1);
+            stats_->record_raw(i, s);
           }));
       mf_subs_.push_back(std::move(sub));
       topics_log += " " + topic;

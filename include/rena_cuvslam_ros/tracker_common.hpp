@@ -11,6 +11,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -97,28 +98,29 @@ class LatestSlot {
 // ---------------------------------------------------------------------------
 // CameraStatsLogger
 // Per-second per-camera + per-stage diagnostic ladder. One-line format:
-//   [<tag>] cam0 rgb 30 depth 30 | cam1 rgb 30 depth 29 |
-//       sync 30/s | decode 30/s | track 28/s <=33 26 >33 2 (sum 90ms)
-// For stereo trackers "rgb" = left frames, "depth" = right frames.
+//   [<tag>] cam0 <s0> 30 <s1> 30 | cam1 <s0> 30 <s1> 29 |
+//       sync 30/s [| decode 30/s] | track 28/s <=33 26 >33 2 (sum 90ms)
+// Stream labels are per-tracker: rgbd logs "rgb"/"depth" (+ decode stage),
+// stereo logs "left"/"right".
 // ---------------------------------------------------------------------------
 class CameraStatsLogger {
  public:
   static constexpr double kBudgetMs = 1000.0 / 30.0;  // ~33.3 ms
 
   CameraStatsLogger(const rclcpp::Logger& logger, std::string tag,
-                    int n_cameras, bool debug)
-      : logger_(logger), tag_(std::move(tag)), n_(n_cameras), debug_(debug) {
-    raw_rgb_.assign(n_cameras, 0);
-    raw_depth_.assign(n_cameras, 0);
+                    int n_cameras, bool debug,
+                    std::array<std::string, 2> stream_labels = {"rgb", "depth"},
+                    bool show_decode = true)
+      : logger_(logger), tag_(std::move(tag)), n_(n_cameras), debug_(debug),
+        labels_(std::move(stream_labels)), show_decode_(show_decode) {
+    raw_[0].assign(n_cameras, 0);
+    raw_[1].assign(n_cameras, 0);
     last_log_ = std::chrono::steady_clock::now();
   }
 
-  inline void record_raw(int cam, bool is_depth) {
+  inline void record_raw(int cam, int stream) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (is_depth)
-      ++raw_depth_[cam];
-    else
-      ++raw_rgb_[cam];
+    ++raw_[stream][cam];
     maybe_log_locked();
   }
 
@@ -155,17 +157,20 @@ class CameraStatsLogger {
     std::string cams;
     for (int i = 0; i < n_; ++i) {
       if (i) cams += " | ";
-      cams += "cam" + std::to_string(i) + " rgb " + std::to_string(raw_rgb_[i]) +
-              " depth " + std::to_string(raw_depth_[i]);
+      cams += "cam" + std::to_string(i) + " " + labels_[0] + " " +
+              std::to_string(raw_[0][i]) + " " + labels_[1] + " " +
+              std::to_string(raw_[1][i]);
     }
+    const std::string decode =
+        show_decode_ ? " | decode " + std::to_string(decode_n_) + "/s" : "";
     RCLCPP_INFO(
         logger_,
-        "[%s] %s | sync %d/s | decode %d/s | track %d/s <=33 %d >33 %d (sum %.0fms)",
-        tag_.c_str(), cams.c_str(), sync_n_, decode_n_, track_n_, on_n_, over_n_,
-        over_ms_);
+        "[%s] %s | sync %d/s%s | track %d/s <=33 %d >33 %d (sum %.0fms)",
+        tag_.c_str(), cams.c_str(), sync_n_, decode.c_str(), track_n_, on_n_,
+        over_n_, over_ms_);
 
-    std::fill(raw_rgb_.begin(), raw_rgb_.end(), 0);
-    std::fill(raw_depth_.begin(), raw_depth_.end(), 0);
+    std::fill(raw_[0].begin(), raw_[0].end(), 0);
+    std::fill(raw_[1].begin(), raw_[1].end(), 0);
     sync_n_ = decode_n_ = track_n_ = on_n_ = over_n_ = 0;
     over_ms_ = 0.0;
     last_log_ = now;
@@ -175,8 +180,10 @@ class CameraStatsLogger {
   std::string tag_;
   int n_;
   bool debug_;
+  std::array<std::string, 2> labels_;
+  bool show_decode_;
   std::mutex mu_;
-  std::vector<int> raw_rgb_, raw_depth_;
+  std::array<std::vector<int>, 2> raw_;
   int sync_n_ = 0, decode_n_ = 0, track_n_ = 0, on_n_ = 0, over_n_ = 0;
   double over_ms_ = 0.0;
   std::chrono::steady_clock::time_point last_log_;

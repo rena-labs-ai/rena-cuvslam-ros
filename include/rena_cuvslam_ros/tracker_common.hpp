@@ -25,8 +25,11 @@
 
 namespace rena_cuvslam {
 
+// vo_pose: frontend (odometry) estimate — continuous, drifts.
+// slam_pose: backend estimate — loop-closure corrected, may jump.
 using ResultCallback =
-    std::function<void(int64_t timestamp_ns, const RosPose& pose)>;
+    std::function<void(int64_t timestamp_ns, const RosPose& vo_pose,
+                       const RosPose& slam_pose)>;
 
 // ---------------------------------------------------------------------------
 // OakCameraConfig / load_base_oak_cameras()

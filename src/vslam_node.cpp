@@ -4,7 +4,7 @@
 //   - odom -> child TF from the frontend (VO): continuous, drifts
 //   - map -> odom TF from the backend correction (slam ∘ vo⁻¹): jumps on
 //     loop closure, so map -> child composes to the backend pose
-// TFs are planarized (yaw only) unless planarize:=false.
+// TFs are true planar (x, y, yaw only) unless planarize:=false.
 // Stamps are the cuVSLAM pipeline timestamp (synced color stamp), the same
 // stamp nvblox looks up at depth time.
 #include <cmath>
@@ -80,11 +80,13 @@ class VslamNode : public rclcpp::Node {
   }
 
  private:
-  // Rotation planarized to yaw only; translation (incl. z) kept as-is --
-  // mount tilt lives in the rig TF.
+  // True planar pose (x, y, yaw only): roll/pitch/z zeroed. The robot runs on
+  // the floor and camera height lives in the static rig TF, so passing VSLAM z
+  // through would only inject drift (e.g. floor rising into the nvblox slice).
   static RosPose planar(const RosPose& p) {
     const double half = 0.5 * quat_to_yaw(p.rotation);
-    return {p.translation, {0.0, 0.0, std::sin(half), std::cos(half)}};
+    return {{p.translation[0], p.translation[1], 0.0},
+            {0.0, 0.0, std::sin(half), std::cos(half)}};
   }
 
   static geometry_msgs::msg::TransformStamped to_tf(

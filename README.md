@@ -64,7 +64,7 @@ ros2 launch rena_cuvslam_ros cuvslam.launch.py tracker:=stereo
 | `tracker`          | `rgbd`              | `rgbd` or `stereo`                                    |
 | `odom_topic`       | `/cuvslam/odometry` | topic the odometry is published on                    |
 | `odom_child_frame` | `base_nav_link`     | `child_frame_id` and odom → child TF child frame      |
-| `planarize`        | `true`              | zero roll/pitch on both TFs (yaw only)                |
+| `planarize`        | `true`              | both TFs true planar: x, y, yaw only (z/roll/pitch zeroed) |
 | `map_frame`        | `map`               | parent frame for the map → odom correction TF         |
 | `depth_scale`      | `0.001`             | depth unit → metres (RGBD only; mm→m = 0.001)        |
 | `log_level`        | `info`              | ROS log level; `debug` enables per-second diagnostics |

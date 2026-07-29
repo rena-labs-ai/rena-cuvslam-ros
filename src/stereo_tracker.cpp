@@ -78,20 +78,16 @@ void StereoTracker::load_config() {
         std::to_string(cams.size()));
   }
   for (auto& cam : cams) {
-    // cuVSLAM tracks the raw pair, so it needs the true L<->R rigid transform
-    // (baseline + small mount rotation), not just a scalar baseline.
-    if (!cam.has_stereo_extrinsic) {
-      throw std::runtime_error(
-          "StereoTracker: OAK " + cam.serial_no + " (base/" + cam.key +
-          ") is missing its stereo_extrinsic block (right_from_left) in "
-          "/etc/rena/config.yaml, required for the raw stereo baseline");
-    }
+    // cuVSLAM tracks the device-rectified pair; the virtual cameras' geometry
+    // (shared K, zero distortion, pure-baseline extrinsic, rectification
+    // rotation in .r) comes entirely from the rect camera_info, so the
+    // config's stereo_extrinsic block is no longer consumed here.
     const std::string ns = "/base/" + cam.key;
     entries_.push_back(StereoEntry{std::move(cam),
-                                   ns + "/left/image_raw",
-                                   ns + "/right/image_raw",
-                                   ns + "/left/camera_info",
-                                   ns + "/right/camera_info"});
+                                   ns + "/left_rect/image_rect",
+                                   ns + "/right_rect/image_rect",
+                                   ns + "/left_rect/camera_info",
+                                   ns + "/right_rect/camera_info"});
   }
 
   const int n = static_cast<int>(entries_.size());
@@ -171,10 +167,23 @@ void StereoTracker::build_rig_and_tracker() {
     const auto& left_info = camera_infos_[2 * i];
     const auto& right_info = camera_infos_[2 * i + 1];
 
-    const RigFromCamera rfc_left = rig_from_camera_from_robot_pose(
+    const RigFromCamera rfc_phys = rig_from_camera_from_robot_pose(
         e.roll_deg, e.pitch_deg, e.yaw_deg, e.translation);
+    // The rect streams live in the mesh's virtual cameras: the left virtual
+    // camera is the physical left rotated by the rectification rotation
+    // (camera_info.r, x_rect = R * x_cam -> frame axes differ by R^T), and
+    // the right one is a pure baseline translation from it (right P carries
+    // Tx = -fx * B).
+    Mat3 rect_r;
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 3; ++c) rect_r[r][c] = left_info.r[3 * r + c];
+    const Mat3 r_rig_rect = mat3_mul(quat_to_rotmat(rfc_phys.rotation),
+                                     mat3_transpose(rect_r));
+    const RigFromCamera rfc_left{rotmat_to_quat(r_rig_rect),
+                                 rfc_phys.translation};
+    const double baseline = -right_info.p[3] / right_info.p[0];
     const RigFromCamera rfc_right = rig_from_right_given_left(
-        rfc_left, e.right_from_left_rot, e.right_from_left_trans);
+        rfc_left, Quat{0.0, 0.0, 0.0, 1.0}, Vec3{-baseline, 0.0, 0.0});
 
     // Helper to fill a cuvslam::Camera from CameraInfo + rig extrinsic.
     auto make_cam = [](const sensor_msgs::msg::CameraInfo& info,
@@ -231,7 +240,7 @@ void StereoTracker::build_rig_and_tracker() {
   cuvslam::Odometry::Config ocfg;
   ocfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
   ocfg.async_sba = false;
-  ocfg.rectified_stereo_camera = false;
+  ocfg.rectified_stereo_camera = true;
   ocfg.enable_observations_export = true;
   ocfg.enable_landmarks_export = true;
   ocfg.enable_final_landmarks_export = false;

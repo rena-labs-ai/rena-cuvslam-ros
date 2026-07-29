@@ -194,13 +194,10 @@ void StereoTracker::build_rig_and_tracker() {
       cam.focal = {static_cast<float>(info.k[0]), static_cast<float>(info.k[4])};
       cam.principal = {static_cast<float>(info.k[2]),
                        static_cast<float>(info.k[5])};
-      cam.distortion.model = cuvslam::Distortion::Model::Polynomial;
-      cam.distortion.parameters.resize(8);
-      for (int j = 0; j < 8; ++j)
-        cam.distortion.parameters[j] =
-            j < static_cast<int>(info.d.size())
-                ? static_cast<float>(info.d[j])
-                : 0.0f;
+      // Rect streams are distortion-free; rectified_stereo_camera mode
+      // requires the pinhole model (0 parameters).
+      cam.distortion.model = cuvslam::Distortion::Model::Pinhole;
+      cam.distortion.parameters.clear();
       cam.rig_from_camera.rotation = {
           static_cast<float>(rfc.rotation[0]), static_cast<float>(rfc.rotation[1]),
           static_cast<float>(rfc.rotation[2]), static_cast<float>(rfc.rotation[3])};

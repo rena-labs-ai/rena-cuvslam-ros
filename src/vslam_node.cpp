@@ -36,6 +36,7 @@ class VslamNode : public rclcpp::Node {
     debug_ = declare_parameter<bool>("debug", false);
     depth_scale_ = declare_parameter<double>("depth_scale", 0.001);
     declare_parameter<std::string>("tracker", "rgbd");
+    declare_parameter<std::string>("stereo_input", "raw");
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(kOdomTopic, 10);
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -46,7 +47,13 @@ class VslamNode : public rclcpp::Node {
   void start() {
     const std::string tracker = get_parameter("tracker").as_string();
     if (tracker == "stereo") {
-      stereo_tracker_ = std::make_unique<StereoTracker>(shared_from_this(), debug_);
+      const std::string input = get_parameter("stereo_input").as_string();
+      if (input != "raw" && input != "rect") {
+        throw std::runtime_error("stereo_input must be 'raw' or 'rect', got '" +
+                                 input + "'");
+      }
+      stereo_tracker_ = std::make_unique<StereoTracker>(shared_from_this(),
+                                                        input == "rect", debug_);
       stereo_tracker_->set_result_callback(
           [this](int64_t ts, const RosPose& vo, const RosPose& slam) {
             publish(ts, vo, slam);

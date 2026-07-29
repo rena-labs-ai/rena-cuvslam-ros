@@ -37,6 +37,7 @@ def _launch_setup(context, *args, **kwargs):
                     "map_frame": LaunchConfiguration("map_frame"),
                     "debug": debug,
                     "tracker": LaunchConfiguration("tracker"),
+                    "stereo_input": LaunchConfiguration("stereo_input"),
                     "depth_scale": depth_scale,
                 }
             ],
@@ -48,6 +49,13 @@ def _launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "stereo_input",
+                default_value="raw",
+                description="Stereo tracker input: 'raw' (distorted left/right + "
+                "config stereo_extrinsic) or 'rect' (device-rectified pair, "
+                "geometry from the rect camera_info).",
+            ),
             DeclareLaunchArgument(
                 "odom_topic",
                 default_value="/cuvslam/odometry",

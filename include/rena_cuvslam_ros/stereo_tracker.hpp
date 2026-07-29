@@ -47,7 +47,7 @@ struct StereoEntry : OakCameraConfig {
 
 class StereoTracker {
  public:
-  StereoTracker(rclcpp::Node::SharedPtr node, bool debug);
+  StereoTracker(rclcpp::Node::SharedPtr node, bool rectified, bool debug);
   ~StereoTracker();
 
   void set_result_callback(ResultCallback cb) { on_result_ = std::move(cb); }
@@ -89,6 +89,7 @@ class StereoTracker {
   void track_loop();
 
   rclcpp::Node::SharedPtr node_;
+  bool rectified_;
   bool debug_;
   std::string tag_ = "stereo";
 

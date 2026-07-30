@@ -387,11 +387,17 @@ void StereoTracker::track_loop() {
     stats_->record_track(track_ms);
 
     if (have_slam && on_result_) {
-      const Quat q = {slam_pose.rotation[0], slam_pose.rotation[1],
-                      slam_pose.rotation[2], slam_pose.rotation[3]};
-      const Vec3 t = {slam_pose.translation[0], slam_pose.translation[1],
-                      slam_pose.translation[2]};
-      on_result_(set.ts, to_robot_frame(q, t));
+      const cuvslam::Pose& vo = pe.world_from_rig->pose;
+      on_result_(
+          set.ts,
+          to_robot_frame({vo.rotation[0], vo.rotation[1], vo.rotation[2],
+                          vo.rotation[3]},
+                         {vo.translation[0], vo.translation[1],
+                          vo.translation[2]}),
+          to_robot_frame({slam_pose.rotation[0], slam_pose.rotation[1],
+                          slam_pose.rotation[2], slam_pose.rotation[3]},
+                         {slam_pose.translation[0], slam_pose.translation[1],
+                          slam_pose.translation[2]}));
     }
   }
 }

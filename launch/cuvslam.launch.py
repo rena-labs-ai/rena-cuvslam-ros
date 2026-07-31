@@ -4,6 +4,8 @@ Supports both tracker modes (both read the base OAK cameras from
 /etc/rena/config.yaml, single or multi-camera):
   tracker:=rgbd    (default) — RGBD odometry (color + aligned depth)
   tracker:=stereo            — Stereo odometry (raw left + right mono)
+  tracker:=mono              — Single-camera odometry, up to scale; a raw-vs-rect
+                               calibration probe, not a navigation mode
 
 Assumes the OAK camera nodes are already running. Topics and rig extrinsics
 are derived inside the node from /etc/rena/config.yaml.
@@ -52,7 +54,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "stereo_input",
                 default_value="raw",
-                description="Stereo tracker input: 'raw' (distorted left/right + "
+                description="Tracker input for 'stereo'/'mono': 'raw' (distorted + "
                 "config stereo_extrinsic) or 'rect' (device-rectified pair, "
                 "geometry from the rect camera_info).",
             ),
@@ -87,8 +89,9 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "tracker",
                 default_value="rgbd",
-                description="Tracker mode: 'rgbd' (color + aligned depth) or "
-                "'stereo' (raw left/right mono); both use the base OAK cameras.",
+                description="Tracker mode: 'rgbd' (color + aligned depth), "
+                "'stereo' (left/right mono), or 'mono' (first camera's left "
+                "stream only, up to scale — a raw-vs-rect calibration probe).",
             ),
             DeclareLaunchArgument(
                 "depth_scale",

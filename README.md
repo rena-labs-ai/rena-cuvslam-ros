@@ -34,14 +34,22 @@ launch/
 
 ## Dependencies
 
-Requires the cuVSLAM C++ library built from source (the `rena-control` Ansible
-role handles this via `build_and_install.sh`). ROS deps are declared in
+Requires the prebuilt cuVSLAM C++ SDK under `/opt/cuvslam/17.0.0` (the
+`rena-control` Ansible `cuvslam` role downloads it from the upstream GitHub
+release). Override with `-DCUVSLAM_SDK_DIR`. ROS deps are declared in
 `package.xml`.
 
 ## Build
 
 ```bash
 colcon build --merge-install --packages-select rena_cuvslam_ros
+```
+
+With the SDK in a non-default location:
+
+```bash
+colcon build --merge-install --packages-select rena_cuvslam_ros \
+  --cmake-args -DCUVSLAM_SDK_DIR=/path/to/cuvslam/17.0.0
 ```
 
 ## Run

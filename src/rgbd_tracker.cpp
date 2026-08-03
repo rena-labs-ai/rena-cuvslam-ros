@@ -152,6 +152,7 @@ void RgbdTracker::wait_for_camera_info() {
 
 void RgbdTracker::build_rig_and_tracker() {
   cuvslam::Rig rig;
+  bool all_pinhole = true;
   for (size_t i = 0; i < entries_.size(); ++i) {
     const auto& e = entries_[i];
     const auto& info = camera_infos_[i];
@@ -164,14 +165,21 @@ void RgbdTracker::build_rig_and_tracker() {
                 static_cast<int32_t>(info.height)};
     cam.focal = {static_cast<float>(info.k[0]), static_cast<float>(info.k[4])};
     cam.principal = {static_cast<float>(info.k[2]), static_cast<float>(info.k[5])};
-    // ROS rational_polynomial D -> cuVSLAM Polynomial = first 8 OpenCV coeffs
-    // [k1, k2, p1, p2, k3, k4, k5, k6]; indices 8.. are thin-prism terms the
-    // Polynomial model doesn't carry.
-    cam.distortion.model = cuvslam::Distortion::Model::Polynomial;
-    cam.distortion.parameters.resize(8);
-    for (int j = 0; j < 8; ++j)
-      cam.distortion.parameters[j] =
-          j < static_cast<int>(info.d.size()) ? static_cast<float>(info.d[j]) : 0.0f;
+    const bool pinhole = std::all_of(info.d.begin(), info.d.end(),
+                                     [](double c) { return c == 0.0; });
+    all_pinhole = all_pinhole && pinhole;
+    if (pinhole) {
+      cam.distortion.model = cuvslam::Distortion::Model::Pinhole;
+    } else {
+      // ROS rational_polynomial D -> cuVSLAM Polynomial = first 8 OpenCV coeffs
+      // [k1, k2, p1, p2, k3, k4, k5, k6]; indices 8.. are thin-prism terms the
+      // Polynomial model doesn't carry.
+      cam.distortion.model = cuvslam::Distortion::Model::Polynomial;
+      cam.distortion.parameters.resize(8);
+      for (int j = 0; j < 8; ++j)
+        cam.distortion.parameters[j] =
+            j < static_cast<int>(info.d.size()) ? static_cast<float>(info.d[j]) : 0.0f;
+    }
     cam.rig_from_camera.rotation = {
         static_cast<float>(rfc.rotation[0]), static_cast<float>(rfc.rotation[1]),
         static_cast<float>(rfc.rotation[2]), static_cast<float>(rfc.rotation[3])};
@@ -214,8 +222,13 @@ void RgbdTracker::build_rig_and_tracker() {
     ocfg.rgbd_settings.depth_scale_factor = scale_factor;
   } else {
     // Multi-camera: upstream Multisensor mode, one depth image per rig camera.
-    // Its cuNLS solver models cameras as pinhole; our raw streams carry
-    // polynomial distortion, which upstream warns is unsupported.
+    // Its cuNLS solver is pinhole-only, so distorted inputs are rejected here
+    // rather than silently degrading the solve.
+    if (!all_pinhole)
+      throw std::runtime_error(
+          "multi-camera rgbd uses cuVSLAM Multisensor, which is pinhole-only; "
+          "feed rectified color+depth (zero distortion in camera_info) or use "
+          "tracker:=stereo");
     ocfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multisensor;
     ocfg.multisensor_settings.enable_depth_stereo_tracking = false;
     ocfg.multisensor_settings.depth_scale_factor = scale_factor;

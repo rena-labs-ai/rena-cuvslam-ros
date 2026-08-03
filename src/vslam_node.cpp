@@ -33,6 +33,8 @@ class VslamNode : public rclcpp::Node {
     child_frame_ = declare_parameter<std::string>("odom_child_frame", "base_nav_link");
     planarize_ = declare_parameter<bool>("planarize", true);
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
+    // false = frontend-only: an external backend (e.g. rtabmap) owns map -> odom.
+    publish_map_tf_ = declare_parameter<bool>("publish_map_tf", true);
     debug_ = declare_parameter<bool>("debug", false);
     depth_scale_ = declare_parameter<double>("depth_scale", 0.001);
     declare_parameter<std::string>("tracker", "rgbd");
@@ -67,11 +69,19 @@ class VslamNode : public rclcpp::Node {
     }
 
     const std::string mode = planarize_ ? "PLANAR (yaw only)" : "full 6-DOF";
-    RCLCPP_INFO(get_logger(),
-                "Publishing VO on %s (raw 6-DOF) + TF %s->%s (frontend) and "
-                "%s->%s (backend correction) [%s] (tracker=%s)",
-                kOdomTopic, kOdomFrame, child_frame_.c_str(),
-                map_frame_.c_str(), kOdomFrame, mode.c_str(), tracker.c_str());
+    if (publish_map_tf_) {
+      RCLCPP_INFO(get_logger(),
+                  "Publishing VO on %s (raw 6-DOF) + TF %s->%s (frontend) and "
+                  "%s->%s (backend correction) [%s] (tracker=%s)",
+                  kOdomTopic, kOdomFrame, child_frame_.c_str(),
+                  map_frame_.c_str(), kOdomFrame, mode.c_str(), tracker.c_str());
+    } else {
+      RCLCPP_INFO(get_logger(),
+                  "Publishing VO on %s (raw 6-DOF) + TF %s->%s (frontend only; "
+                  "external backend owns %s->%s) [%s] (tracker=%s)",
+                  kOdomTopic, kOdomFrame, child_frame_.c_str(),
+                  map_frame_.c_str(), kOdomFrame, mode.c_str(), tracker.c_str());
+    }
   }
 
   void stop() {
@@ -126,6 +136,14 @@ class VslamNode : public rclcpp::Node {
 
     // Topic stays raw 6-DOF VO; only the TFs are planarized.
     const RosPose odom_from_base = planarize_ ? planar(vo) : vo;
+
+    if (!publish_map_tf_) {
+      tf_broadcaster_->sendTransform(
+          to_tf(stamp, kOdomFrame, child_frame_, odom_from_base.translation,
+                odom_from_base.rotation));
+      return;
+    }
+
     const RosPose map_from_base = planarize_ ? planar(slam) : slam;
 
     // map->odom = map_from_base ∘ base_from_odom, so the chain composes back
@@ -146,6 +164,7 @@ class VslamNode : public rclcpp::Node {
   std::string child_frame_;
   std::string map_frame_;
   bool planarize_ = true;
+  bool publish_map_tf_ = true;
   bool debug_ = false;
   double depth_scale_ = 0.001;
 

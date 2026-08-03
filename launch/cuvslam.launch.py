@@ -19,6 +19,8 @@ def _launch_setup(context, *args, **kwargs):
     odom_topic = context.launch_configurations.get("odom_topic", "/cuvslam/odometry")
     planarize = context.launch_configurations.get(
         "planarize", "true").strip().lower() in ("1", "true", "yes", "on")
+    publish_map_tf = context.launch_configurations.get(
+        "publish_map_tf", "true").strip().lower() in ("1", "true", "yes", "on")
     log_level = context.launch_configurations.get("log_level", "info").strip().lower()
     debug = log_level == "debug"
     depth_scale = float(context.launch_configurations.get("depth_scale", "0.001"))
@@ -34,6 +36,7 @@ def _launch_setup(context, *args, **kwargs):
                 {
                     "odom_child_frame": LaunchConfiguration("odom_child_frame"),
                     "planarize": planarize,
+                    "publish_map_tf": publish_map_tf,
                     "map_frame": LaunchConfiguration("map_frame"),
                     "debug": debug,
                     "tracker": LaunchConfiguration("tracker"),
@@ -69,6 +72,12 @@ def generate_launch_description():
                 "map_frame",
                 default_value="map",
                 description="Static map -> odom parent frame.",
+            ),
+            DeclareLaunchArgument(
+                "publish_map_tf",
+                default_value="true",
+                description="Publish the map -> odom backend correction TF. Set "
+                "false when an external backend (e.g. rtabmap) owns map -> odom.",
             ),
             DeclareLaunchArgument(
                 "log_level",

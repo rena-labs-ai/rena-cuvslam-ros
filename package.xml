@@ -14,10 +14,6 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <!-- NVIDIA cuVSLAM CUDA library (libcuvslam.so). A build dependency so colcon
-       builds the `cuvslam` package first and this node can link against it. -->
-  <depend>cuvslam</depend>
-
   <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>

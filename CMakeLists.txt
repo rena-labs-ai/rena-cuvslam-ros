@@ -11,35 +11,29 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-Wall -Wextra)
 
-# ---- locate the rena cuVSLAM C++ API (cuvslam2.h + libcuvslam.so) ----------
-# Defaults assume the sibling source checkout at ../cuVSLAM with build/bin
-# populated by its build_and_install.sh (Stage 1). Override with -D... if the
-# library lives elsewhere (e.g. a packaged/installed location).
-set(CUVSLAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cuVSLAM"
-    CACHE PATH "cuVSLAM source checkout root")
-set(CUVSLAM_INCLUDE_DIR "${CUVSLAM_DIR}/libs/cuvslam"
+# ---- locate the cuVSLAM SDK (cuvslam2.h + libcuvslam.so) --------------------
+# Defaults assume the prebuilt NVIDIA SDK the ansible `cuvslam` role unpacks
+# under /opt/cuvslam. Override with -D... if the SDK lives elsewhere.
+set(CUVSLAM_SDK_DIR "/opt/cuvslam/17.0.0" CACHE PATH "cuVSLAM SDK root")
+set(CUVSLAM_INCLUDE_DIR "${CUVSLAM_SDK_DIR}/include/cuvslam"
     CACHE PATH "Directory containing cuvslam2.h")
 
-# Prefer the copy installed by the `cuvslam` colcon package (on CMAKE_PREFIX_PATH);
-# fall back to a standalone ../cuVSLAM/build/bin checkout for manual dev builds.
-find_library(CUVSLAM_LIBRARY NAMES cuvslam)
-if(NOT CUVSLAM_LIBRARY)
-  find_library(CUVSLAM_LIBRARY
-    NAMES cuvslam
-    HINTS "${CUVSLAM_DIR}/build/bin"
-    NO_DEFAULT_PATH)
-endif()
+# NO_DEFAULT_PATH: the sourced ROS env puts /opt/ros/humble/lib on the search
+# path, which carries an incompatible Isaac ROS libcuvslam.so.
+find_library(CUVSLAM_LIBRARY
+  NAMES cuvslam
+  HINTS "${CUVSLAM_SDK_DIR}/bin"
+  NO_DEFAULT_PATH)
 
 if(NOT EXISTS "${CUVSLAM_INCLUDE_DIR}/cuvslam2.h")
   message(FATAL_ERROR
     "cuvslam2.h not found in CUVSLAM_INCLUDE_DIR='${CUVSLAM_INCLUDE_DIR}'. "
-    "Point -DCUVSLAM_DIR=<cuVSLAM repo root> at your checkout.")
+    "Install the SDK (ansible cuvslam role) or pass -DCUVSLAM_SDK_DIR=<root>.")
 endif()
 if(NOT CUVSLAM_LIBRARY)
   message(FATAL_ERROR
-    "libcuvslam.so not found. It is built by the 'cuvslam' colcon package (a "
-    "<depend> of this one) — run a full 'colcon build' so cuvslam builds first, "
-    "or pass -DCUVSLAM_LIBRARY=/path/to/libcuvslam.so.")
+    "libcuvslam.so not found under '${CUVSLAM_SDK_DIR}/bin'. "
+    "Install the SDK (ansible cuvslam role) or pass -DCUVSLAM_SDK_DIR=<root>.")
 endif()
 message(STATUS "cuVSLAM header : ${CUVSLAM_INCLUDE_DIR}/cuvslam2.h")
 message(STATUS "cuVSLAM library: ${CUVSLAM_LIBRARY}")
@@ -71,13 +65,12 @@ ament_target_dependencies(vslam_node
 
 target_link_libraries(vslam_node ${CUVSLAM_LIBRARY} yaml-cpp)
 
-# Ship our cuVSLAM build *with* the package: install libcuvslam.so next to the
-# binary so the install tree is self-contained and does not depend on the
-# transient ../cuVSLAM/build/bin directory surviving.
+# Ship the SDK's libcuvslam.so *with* the package: installed next to the
+# binary so the install tree is self-contained even if /opt/cuvslam moves.
 get_filename_component(CUVSLAM_LIB_DIR "${CUVSLAM_LIBRARY}" DIRECTORY)
 install(FILES "${CUVSLAM_LIBRARY}" DESTINATION lib/${PROJECT_NAME})
 
-# rpath: at build time load from the cuVSLAM build dir; once installed, load the
+# rpath: at build time load from the SDK dir; once installed, load the
 # co-located copy via $ORIGIN. Crucially, force the legacy DT_RPATH tag
 # (--disable-new-dtags) instead of DT_RUNPATH: DT_RPATH is searched *before*
 # LD_LIBRARY_PATH, so our libcuvslam.so wins over the incompatible Isaac ROS

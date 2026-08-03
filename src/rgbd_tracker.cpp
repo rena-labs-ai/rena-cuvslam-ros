@@ -194,7 +194,6 @@ void RgbdTracker::build_rig_and_tracker() {
 
   // ---- Odometry config (mirrors RosOakRGBDTracker.create_odometry_config) ----
   cuvslam::Odometry::Config ocfg;
-  ocfg.odometry_mode = cuvslam::Odometry::OdometryMode::RGBD;
   ocfg.async_sba = true;
   ocfg.rectified_stereo_camera = false;
   // SLAM requires observations + landmarks export (cf. the pycuvslam Tracker
@@ -208,18 +207,20 @@ void RgbdTracker::build_rig_and_tracker() {
   ocfg.enable_final_landmarks_export = false;
 
   const float scale_factor = static_cast<float>(1.0 / depth_scale_);
-  ocfg.rgbd_settings.enable_depth_stereo_tracking = false;
   if (entries_.size() == 1) {
+    ocfg.odometry_mode = cuvslam::Odometry::OdometryMode::RGBD;
+    ocfg.rgbd_settings.enable_depth_stereo_tracking = false;
     ocfg.rgbd_settings.depth_camera_id = 0;
     ocfg.rgbd_settings.depth_scale_factor = scale_factor;
   } else {
-    // Multi-camera: one depth source per rig camera (cuVSLAM#3 multi-depth ICP).
-    for (size_t i = 0; i < entries_.size(); ++i) {
-      cuvslam::Odometry::RGBDSettings::DepthCameraSettings d;
-      d.camera_id = static_cast<int32_t>(i);
-      d.depth_scale_factor = scale_factor;
-      ocfg.rgbd_settings.depth_cameras.push_back(d);
-    }
+    // Multi-camera: upstream Multisensor mode, one depth image per rig camera.
+    // Its cuNLS solver models cameras as pinhole; our raw streams carry
+    // polynomial distortion, which upstream warns is unsupported.
+    ocfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multisensor;
+    ocfg.multisensor_settings.enable_depth_stereo_tracking = false;
+    ocfg.multisensor_settings.depth_scale_factor = scale_factor;
+    for (size_t i = 0; i < entries_.size(); ++i)
+      ocfg.multisensor_settings.depth_camera_ids.push_back(static_cast<int32_t>(i));
   }
 
   try {
@@ -239,7 +240,7 @@ void RgbdTracker::build_rig_and_tracker() {
 
   RCLCPP_INFO(node_->get_logger(), "[%s] cuVSLAM Odometry+Slam created (%zu cameras, %s)",
               tag_.c_str(), entries_.size(),
-              entries_.size() > 1 ? "multi-depth ICP" : "single RGBD");
+              entries_.size() > 1 ? "multisensor" : "single RGBD");
 }
 
 void RgbdTracker::start_streaming() {
@@ -366,7 +367,8 @@ void RgbdTracker::track_loop() {
       if (pe.world_from_rig.has_value()) {
         cuvslam::Odometry::State state;
         odom_->GetState(state);
-        slam_pose = slam_->Track(state);
+        slam_->Track(state);
+        slam_pose = slam_->GetPose();
         have_slam = true;
       }
     } catch (const std::exception& ex) {

@@ -15,6 +15,18 @@ add_compile_options(-Wall -Wextra)
 # Defaults assume the prebuilt NVIDIA SDK the ansible `cuvslam` role unpacks
 # under /opt/cuvslam. Override with -D... if the SDK lives elsewhere.
 set(CUVSLAM_SDK_DIR "/opt/cuvslam/17.0.0" CACHE PATH "cuVSLAM SDK root")
+
+# find_* results are cached; when the SDK root changes under an existing build
+# tree (e.g. a version bump moves the default), drop the derived entries so
+# they re-resolve against the new root instead of silently keeping the old SDK.
+if(DEFINED CACHE{_CUVSLAM_SDK_DIR_PREV}
+   AND NOT "$CACHE{_CUVSLAM_SDK_DIR_PREV}" STREQUAL "${CUVSLAM_SDK_DIR}")
+  unset(CUVSLAM_INCLUDE_DIR CACHE)
+  unset(CUVSLAM_LIBRARY CACHE)
+endif()
+set(_CUVSLAM_SDK_DIR_PREV "${CUVSLAM_SDK_DIR}" CACHE INTERNAL
+    "SDK root used at last configure")
+
 set(CUVSLAM_INCLUDE_DIR "${CUVSLAM_SDK_DIR}/include/cuvslam"
     CACHE PATH "Directory containing cuvslam2.h")
 

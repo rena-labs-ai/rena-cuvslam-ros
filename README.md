@@ -45,6 +45,13 @@ release). Override with `-DCUVSLAM_SDK_DIR`. ROS deps are declared in
 colcon build --merge-install --packages-select rena_cuvslam_ros
 ```
 
+With the SDK in a non-default location:
+
+```bash
+colcon build --merge-install --packages-select rena_cuvslam_ros \
+  --cmake-args -DCUVSLAM_SDK_DIR=/path/to/cuvslam/17.0.0
+```
+
 ## Run
 
 Camera topics and rig extrinsics are read from `/etc/rena/config.yaml` (written

@@ -409,7 +409,8 @@ void StereoTracker::track_loop() {
       if (pe.world_from_rig.has_value()) {
         cuvslam::Odometry::State state;
         odom_->GetState(state);
-        slam_pose = slam_->Track(state);
+        slam_->Track(state);
+        slam_pose = slam_->GetPose();
         have_slam = true;
       }
     } catch (const std::exception& ex) {

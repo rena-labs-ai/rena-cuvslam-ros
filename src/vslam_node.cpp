@@ -17,7 +17,6 @@
 #include <tf2_ros/transform_broadcaster.h>
 
 #include "rena_cuvslam_ros/frame_conversions.hpp"
-#include "rena_cuvslam_ros/mono_tracker.hpp"
 #include "rena_cuvslam_ros/rgbd_tracker.hpp"
 #include "rena_cuvslam_ros/stereo_tracker.hpp"
 
@@ -47,24 +46,14 @@ class VslamNode : public rclcpp::Node {
   // tracker needs the node as a shared_ptr (subscriptions + camera-info wait).
   void start() {
     const std::string tracker = get_parameter("tracker").as_string();
-    if (tracker == "stereo" || tracker == "mono") {
+    if (tracker == "stereo") {
       const std::string input = get_parameter("stereo_input").as_string();
       if (input != "raw" && input != "rect") {
         throw std::runtime_error("stereo_input must be 'raw' or 'rect', got '" +
                                  input + "'");
       }
     }
-    if (tracker == "mono") {
-      mono_tracker_ =
-          std::make_unique<MonoTracker>(shared_from_this(),
-                                        get_parameter("stereo_input").as_string() == "rect",
-                                        debug_);
-      mono_tracker_->set_result_callback(
-          [this](int64_t ts, const RosPose& vo, const RosPose& slam) {
-            publish(ts, vo, slam);
-          });
-      mono_tracker_->initialize();
-    } else if (tracker == "stereo") {
+    if (tracker == "stereo") {
       const std::string input = get_parameter("stereo_input").as_string();
       stereo_tracker_ = std::make_unique<StereoTracker>(shared_from_this(),
                                                         input == "rect", debug_);
@@ -96,7 +85,6 @@ class VslamNode : public rclcpp::Node {
   }
 
   void stop() {
-    if (mono_tracker_) mono_tracker_->shutdown();
     if (stereo_tracker_) stereo_tracker_->shutdown();
     if (tracker_) tracker_->shutdown();
   }
@@ -174,7 +162,6 @@ class VslamNode : public rclcpp::Node {
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::unique_ptr<RgbdTracker> tracker_;
-  std::unique_ptr<MonoTracker> mono_tracker_;
   std::unique_ptr<StereoTracker> stereo_tracker_;
 };
 

@@ -65,7 +65,6 @@ find_package(yaml-cpp REQUIRED)
 add_executable(vslam_node
   src/vslam_node.cpp
   src/tracker_common.cpp
-  src/mono_tracker.cpp
   src/rgbd_tracker.cpp
   src/stereo_tracker.cpp)
 

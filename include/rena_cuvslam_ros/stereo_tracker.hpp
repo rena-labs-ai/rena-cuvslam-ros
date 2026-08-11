@@ -90,6 +90,7 @@ class StereoTracker {
 
   rclcpp::Node::SharedPtr node_;
   bool rectified_;
+  bool enable_slam_;
   bool debug_;
   std::string tag_ = "stereo";
 

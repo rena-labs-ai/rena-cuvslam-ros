@@ -264,22 +264,36 @@ void StereoTracker::build_rig_and_tracker() {
 
     RCLCPP_INFO(
         node_->get_logger(),
-        "[%s] cam%zu base/%s left: size=%dx%d focal=(%.2f,%.2f) "
-        "rig_t=(%.4f,%.4f,%.4f)",
-        tag_.c_str(), i, e.key.c_str(),
+        "[%s] cam%zu base/%s left (baseline=%.6f): size=%dx%d "
+        "focal=(%.2f,%.2f) principal=(%.2f,%.2f) dist=%zu "
+        "rig_t=(%.6f,%.6f,%.6f) rig_q=(%.6f,%.6f,%.6f,%.6f)",
+        tag_.c_str(), i, e.key.c_str(), baseline,
         cam_left.size[0], cam_left.size[1], cam_left.focal[0], cam_left.focal[1],
+        cam_left.principal[0], cam_left.principal[1],
+        cam_left.distortion.parameters.size(),
         cam_left.rig_from_camera.translation[0],
         cam_left.rig_from_camera.translation[1],
-        cam_left.rig_from_camera.translation[2]);
+        cam_left.rig_from_camera.translation[2],
+        cam_left.rig_from_camera.rotation[0],
+        cam_left.rig_from_camera.rotation[1],
+        cam_left.rig_from_camera.rotation[2],
+        cam_left.rig_from_camera.rotation[3]);
     RCLCPP_INFO(
         node_->get_logger(),
-        "[%s] cam%zu base/%s right: size=%dx%d focal=(%.2f,%.2f) "
-        "rig_t=(%.4f,%.4f,%.4f)",
-        tag_.c_str(), i, e.key.c_str(),
+        "[%s] cam%zu base/%s right (baseline=%.6f): size=%dx%d "
+        "focal=(%.2f,%.2f) principal=(%.2f,%.2f) dist=%zu "
+        "rig_t=(%.6f,%.6f,%.6f) rig_q=(%.6f,%.6f,%.6f,%.6f)",
+        tag_.c_str(), i, e.key.c_str(), baseline,
         cam_right.size[0], cam_right.size[1], cam_right.focal[0],
-        cam_right.focal[1], cam_right.rig_from_camera.translation[0],
+        cam_right.focal[1], cam_right.principal[0], cam_right.principal[1],
+        cam_right.distortion.parameters.size(),
+        cam_right.rig_from_camera.translation[0],
         cam_right.rig_from_camera.translation[1],
-        cam_right.rig_from_camera.translation[2]);
+        cam_right.rig_from_camera.translation[2],
+        cam_right.rig_from_camera.rotation[0],
+        cam_right.rig_from_camera.rotation[1],
+        cam_right.rig_from_camera.rotation[2],
+        cam_right.rig_from_camera.rotation[3]);
   }
 
   // ---- Odometry config (mirrors RosOakStereoTracker.create_odometry_config) ----

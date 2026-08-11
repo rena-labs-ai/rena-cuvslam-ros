@@ -6,6 +6,9 @@
 #include <functional>
 #include <stdexcept>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <tf2/exceptions.h>
+
 #include "cuvslam2.h"
 
 using namespace std::chrono_literals;
@@ -16,6 +19,8 @@ namespace {
 constexpr int64_t kSlopNs = 5'000'000;  // SLOP_SEC = 0.005 s (same as RGBD)
 constexpr int kSyncQueue = 10;          // per-topic buffer for ApproximateTime
 constexpr double kCameraInfoTimeoutS = 30.0;
+constexpr char kRigFrame[] = "base_nav_link";
+constexpr double kTfTimeoutS = 10.0;
 
 inline int64_t stamp_ns(const sensor_msgs::msg::Image& m) {
   return static_cast<int64_t>(m.header.stamp.sec) * 1'000'000'000 +
@@ -64,8 +69,15 @@ bool fill_mono_image(cuvslam::Image& img, const sensor_msgs::msg::Image& msg,
 
 // ------------------------------- StereoTracker ------------------------------
 
-StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool debug)
-    : node_(std::move(node)), debug_(debug) {}
+StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool rectified,
+                             bool enable_slam, bool debug)
+    : node_(std::move(node)),
+      rectified_(rectified),
+      enable_slam_(enable_slam),
+      debug_(debug) {
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, node_);
+}
 
 StereoTracker::~StereoTracker() { shutdown(); }
 
@@ -78,20 +90,20 @@ void StereoTracker::load_config() {
         std::to_string(cams.size()));
   }
   for (auto& cam : cams) {
-    // cuVSLAM tracks the raw pair, so it needs the true L<->R rigid transform
-    // (baseline + small mount rotation), not just a scalar baseline.
-    if (!cam.has_stereo_extrinsic) {
-      throw std::runtime_error(
-          "StereoTracker: OAK " + cam.serial_no + " (base/" + cam.key +
-          ") is missing its stereo_extrinsic block (right_from_left) in "
-          "/etc/rena/config.yaml, required for the raw stereo baseline");
-    }
     const std::string ns = "/base/" + cam.key;
-    entries_.push_back(StereoEntry{std::move(cam),
-                                   ns + "/left/image_raw",
-                                   ns + "/right/image_raw",
-                                   ns + "/left/camera_info",
-                                   ns + "/right/camera_info"});
+    if (rectified_) {
+      entries_.push_back(StereoEntry{std::move(cam),
+                                     ns + "/left_rect/image_rect",
+                                     ns + "/right_rect/image_rect",
+                                     ns + "/left_rect/camera_info",
+                                     ns + "/right_rect/camera_info"});
+    } else {
+      entries_.push_back(StereoEntry{std::move(cam),
+                                     ns + "/left/image_raw",
+                                     ns + "/right/image_raw",
+                                     ns + "/left/camera_info",
+                                     ns + "/right/camera_info"});
+    }
   }
 
   const int n = static_cast<int>(entries_.size());
@@ -163,6 +175,23 @@ void StereoTracker::wait_for_camera_info() {
               tag_.c_str());
 }
 
+RigFromCamera StereoTracker::rig_from_camera_from_tf_frame(
+    const sensor_msgs::msg::CameraInfo& info) {
+  geometry_msgs::msg::TransformStamped tf;
+  try {
+    tf = tf_buffer_->lookupTransform(kRigFrame, info.header.frame_id,
+                                     tf2::TimePointZero,
+                                     tf2::durationFromSec(kTfTimeoutS));
+  } catch (const tf2::TransformException& ex) {
+    throw std::runtime_error("no TF " + std::string(kRigFrame) + " -> " +
+                             info.header.frame_id + ": " + ex.what());
+  }
+  const auto& t = tf.transform.translation;
+  const auto& q = tf.transform.rotation;
+  return rig_from_camera_from_tf(Quat{q.x, q.y, q.z, q.w},
+                                 Vec3{t.x, t.y, t.z});
+}
+
 void StereoTracker::build_rig_and_tracker() {
   cuvslam::Rig rig;
   // Rig camera order: [l0, r0, l1, r1, ...]
@@ -171,27 +200,53 @@ void StereoTracker::build_rig_and_tracker() {
     const auto& left_info = camera_infos_[2 * i];
     const auto& right_info = camera_infos_[2 * i + 1];
 
-    const RigFromCamera rfc_left = rig_from_camera_from_robot_pose(
-        e.roll_deg, e.pitch_deg, e.yaw_deg, e.translation);
+    // Left placement from TF (the CameraInfo frame_id names the frame the
+    // stream lives in). The right camera then comes off the pair's own
+    // CameraInfo, the same recipe rtabmap's adapter uses: a rect pair is a
+    // pure baseline, a raw pair carries the two rectification rotations that
+    // map both cameras into that shared rectified frame.
+    const RigFromCamera rfc_left = rig_from_camera_from_tf_frame(left_info);
+    const double baseline = -right_info.p[3] / right_info.p[0];
+    Quat right_from_left_rot{0.0, 0.0, 0.0, 1.0};
+    Vec3 right_from_left_trans{-baseline, 0.0, 0.0};
+    if (!rectified_) {
+      Mat3 r_left{}, r_right{};
+      for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+          r_left[r][c] = left_info.r[3 * r + c];
+          r_right[r][c] = right_info.r[3 * r + c];
+        }
+      }
+      const Mat3 r_right_t = mat3_transpose(r_right);
+      right_from_left_rot = rotmat_to_quat(mat3_mul(r_right_t, r_left));
+      const Vec3 rotated = mat3_apply(r_right_t, Vec3{baseline, 0.0, 0.0});
+      right_from_left_trans = {-rotated[0], -rotated[1], -rotated[2]};
+    }
     const RigFromCamera rfc_right = rig_from_right_given_left(
-        rfc_left, e.right_from_left_rot, e.right_from_left_trans);
+        rfc_left, right_from_left_rot, right_from_left_trans);
 
     // Helper to fill a cuvslam::Camera from CameraInfo + rig extrinsic.
-    auto make_cam = [](const sensor_msgs::msg::CameraInfo& info,
-                       const RigFromCamera& rfc) {
+    auto make_cam = [this](const sensor_msgs::msg::CameraInfo& info,
+                           const RigFromCamera& rfc) {
       cuvslam::Camera cam;
       cam.size = {static_cast<int32_t>(info.width),
                   static_cast<int32_t>(info.height)};
       cam.focal = {static_cast<float>(info.k[0]), static_cast<float>(info.k[4])};
       cam.principal = {static_cast<float>(info.k[2]),
                        static_cast<float>(info.k[5])};
-      cam.distortion.model = cuvslam::Distortion::Model::Polynomial;
-      cam.distortion.parameters.resize(8);
-      for (int j = 0; j < 8; ++j)
-        cam.distortion.parameters[j] =
-            j < static_cast<int>(info.d.size())
-                ? static_cast<float>(info.d[j])
-                : 0.0f;
+      if (rectified_) {
+        // Rect streams are distortion-free; rectified_stereo_camera mode
+        // requires the pinhole model (0 parameters).
+        cam.distortion.model = cuvslam::Distortion::Model::Pinhole;
+        cam.distortion.parameters.clear();
+      } else {
+        cam.distortion.model = cuvslam::Distortion::Model::Polynomial;
+        cam.distortion.parameters.resize(8);
+        for (int j = 0; j < 8; ++j)
+          cam.distortion.parameters[j] =
+              j < static_cast<int>(info.d.size()) ? static_cast<float>(info.d[j])
+                                                  : 0.0f;
+      }
       cam.rig_from_camera.rotation = {
           static_cast<float>(rfc.rotation[0]), static_cast<float>(rfc.rotation[1]),
           static_cast<float>(rfc.rotation[2]), static_cast<float>(rfc.rotation[3])};
@@ -209,29 +264,43 @@ void StereoTracker::build_rig_and_tracker() {
 
     RCLCPP_INFO(
         node_->get_logger(),
-        "[%s] cam%zu base/%s left: size=%dx%d focal=(%.2f,%.2f) "
-        "rig_t=(%.4f,%.4f,%.4f)",
-        tag_.c_str(), i, e.key.c_str(),
+        "[%s] cam%zu base/%s left (baseline=%.6f): size=%dx%d "
+        "focal=(%.2f,%.2f) principal=(%.2f,%.2f) dist=%zu "
+        "rig_t=(%.6f,%.6f,%.6f) rig_q=(%.6f,%.6f,%.6f,%.6f)",
+        tag_.c_str(), i, e.key.c_str(), baseline,
         cam_left.size[0], cam_left.size[1], cam_left.focal[0], cam_left.focal[1],
+        cam_left.principal[0], cam_left.principal[1],
+        cam_left.distortion.parameters.size(),
         cam_left.rig_from_camera.translation[0],
         cam_left.rig_from_camera.translation[1],
-        cam_left.rig_from_camera.translation[2]);
+        cam_left.rig_from_camera.translation[2],
+        cam_left.rig_from_camera.rotation[0],
+        cam_left.rig_from_camera.rotation[1],
+        cam_left.rig_from_camera.rotation[2],
+        cam_left.rig_from_camera.rotation[3]);
     RCLCPP_INFO(
         node_->get_logger(),
-        "[%s] cam%zu base/%s right: size=%dx%d focal=(%.2f,%.2f) "
-        "rig_t=(%.4f,%.4f,%.4f)",
-        tag_.c_str(), i, e.key.c_str(),
+        "[%s] cam%zu base/%s right (baseline=%.6f): size=%dx%d "
+        "focal=(%.2f,%.2f) principal=(%.2f,%.2f) dist=%zu "
+        "rig_t=(%.6f,%.6f,%.6f) rig_q=(%.6f,%.6f,%.6f,%.6f)",
+        tag_.c_str(), i, e.key.c_str(), baseline,
         cam_right.size[0], cam_right.size[1], cam_right.focal[0],
-        cam_right.focal[1], cam_right.rig_from_camera.translation[0],
+        cam_right.focal[1], cam_right.principal[0], cam_right.principal[1],
+        cam_right.distortion.parameters.size(),
+        cam_right.rig_from_camera.translation[0],
         cam_right.rig_from_camera.translation[1],
-        cam_right.rig_from_camera.translation[2]);
+        cam_right.rig_from_camera.translation[2],
+        cam_right.rig_from_camera.rotation[0],
+        cam_right.rig_from_camera.rotation[1],
+        cam_right.rig_from_camera.rotation[2],
+        cam_right.rig_from_camera.rotation[3]);
   }
 
   // ---- Odometry config (mirrors RosOakStereoTracker.create_odometry_config) ----
   cuvslam::Odometry::Config ocfg;
   ocfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
   ocfg.async_sba = false;
-  ocfg.rectified_stereo_camera = false;
+  ocfg.rectified_stereo_camera = rectified_;
   ocfg.enable_observations_export = true;
   ocfg.enable_landmarks_export = true;
   ocfg.enable_final_landmarks_export = false;
@@ -246,15 +315,17 @@ void StereoTracker::build_rig_and_tracker() {
 
   odom_ = std::make_unique<cuvslam::Odometry>(rig, ocfg);
 
-  // ---- SLAM config ----
-  cuvslam::Slam::Config scfg;
-  scfg.sync_mode = false;
-  scfg.planar_constraints = true;
-  slam_ = std::make_unique<cuvslam::Slam>(rig, odom_->GetPrimaryCameras(), scfg);
+  if (enable_slam_) {
+    cuvslam::Slam::Config scfg;
+    scfg.sync_mode = false;
+    scfg.planar_constraints = true;
+    slam_ = std::make_unique<cuvslam::Slam>(rig, odom_->GetPrimaryCameras(), scfg);
+  }
 
   RCLCPP_INFO(node_->get_logger(),
-              "[%s] cuVSLAM Odometry+Slam created (%zu OAKs, %zu stereo cameras)",
-              tag_.c_str(), entries_.size(), rig.cameras.size());
+              "[%s] cuVSLAM Odometry%s created (%zu OAKs, %zu stereo cameras)",
+              tag_.c_str(), enable_slam_ ? "+Slam" : " (VO only)",
+              entries_.size(), rig.cameras.size());
 }
 
 void StereoTracker::start_streaming() {
@@ -370,10 +441,15 @@ void StereoTracker::track_loop() {
     try {
       pe = odom_->Track(images, {}, {});
       if (pe.world_from_rig.has_value()) {
-        cuvslam::Odometry::State state;
-        odom_->GetState(state);
-        slam_->Track(state);
-        slam_pose = slam_->GetPose();
+        if (slam_) {
+          cuvslam::Odometry::State state;
+          odom_->GetState(state);
+          slam_->Track(state);
+          slam_pose = slam_->GetPose();
+        } else {
+          // VO-only: the backend correction publishes as identity.
+          slam_pose = pe.world_from_rig->pose;
+        }
         have_slam = true;
       }
     } catch (const std::exception& ex) {

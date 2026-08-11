@@ -37,6 +37,7 @@ def _launch_setup(context, *args, **kwargs):
                     "map_frame": LaunchConfiguration("map_frame"),
                     "debug": debug,
                     "tracker": LaunchConfiguration("tracker"),
+                    "stereo_input": LaunchConfiguration("stereo_input"),
                     "depth_scale": depth_scale,
                 }
             ],
@@ -48,6 +49,13 @@ def _launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "stereo_input",
+                default_value="raw",
+                description="Tracker input for 'stereo': 'raw' (distorted + "
+                "config stereo_extrinsic) or 'rect' (device-rectified pair, "
+                "geometry from the rect camera_info).",
+            ),
             DeclareLaunchArgument(
                 "odom_topic",
                 default_value="/cuvslam/odometry",
@@ -79,8 +87,8 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "tracker",
                 default_value="rgbd",
-                description="Tracker mode: 'rgbd' (color + aligned depth) or "
-                "'stereo' (raw left/right mono); both use the base OAK cameras.",
+                description="Tracker mode: 'rgbd' (color + aligned depth), "
+                "'stereo' (left/right mono).",
             ),
             DeclareLaunchArgument(
                 "depth_scale",

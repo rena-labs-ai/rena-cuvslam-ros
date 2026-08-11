@@ -200,11 +200,30 @@ void StereoTracker::build_rig_and_tracker() {
     const auto& left_info = camera_infos_[2 * i];
     const auto& right_info = camera_infos_[2 * i + 1];
 
-    // TF is the only source of rig placement: the CameraInfo frame_id already
-    // names the frame the stream lives in, so raw and rect resolve to their
-    // own optical frames without a rectification correction here.
+    // Left placement from TF (the CameraInfo frame_id names the frame the
+    // stream lives in). The right camera then comes off the pair's own
+    // CameraInfo, the same recipe rtabmap's adapter uses: a rect pair is a
+    // pure baseline, a raw pair carries the two rectification rotations that
+    // map both cameras into that shared rectified frame.
     const RigFromCamera rfc_left = rig_from_camera_from_tf_frame(left_info);
-    const RigFromCamera rfc_right = rig_from_camera_from_tf_frame(right_info);
+    const double baseline = -right_info.p[3] / right_info.p[0];
+    Quat right_from_left_rot{0.0, 0.0, 0.0, 1.0};
+    Vec3 right_from_left_trans{-baseline, 0.0, 0.0};
+    if (!rectified_) {
+      Mat3 r_left{}, r_right{};
+      for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+          r_left[r][c] = left_info.r[3 * r + c];
+          r_right[r][c] = right_info.r[3 * r + c];
+        }
+      }
+      const Mat3 r_right_t = mat3_transpose(r_right);
+      right_from_left_rot = rotmat_to_quat(mat3_mul(r_right_t, r_left));
+      const Vec3 rotated = mat3_apply(r_right_t, Vec3{baseline, 0.0, 0.0});
+      right_from_left_trans = {-rotated[0], -rotated[1], -rotated[2]};
+    }
+    const RigFromCamera rfc_right = rig_from_right_given_left(
+        rfc_left, right_from_left_rot, right_from_left_trans);
 
     // Helper to fill a cuvslam::Camera from CameraInfo + rig extrinsic.
     auto make_cam = [this](const sensor_msgs::msg::CameraInfo& info,

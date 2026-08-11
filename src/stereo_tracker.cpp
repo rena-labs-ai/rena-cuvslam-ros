@@ -6,6 +6,9 @@
 #include <functional>
 #include <stdexcept>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <tf2/exceptions.h>
+
 #include "cuvslam2.h"
 
 using namespace std::chrono_literals;
@@ -16,6 +19,8 @@ namespace {
 constexpr int64_t kSlopNs = 5'000'000;  // SLOP_SEC = 0.005 s (same as RGBD)
 constexpr int kSyncQueue = 10;          // per-topic buffer for ApproximateTime
 constexpr double kCameraInfoTimeoutS = 30.0;
+constexpr char kRigFrame[] = "base_nav_link";
+constexpr double kTfTimeoutS = 10.0;
 
 inline int64_t stamp_ns(const sensor_msgs::msg::Image& m) {
   return static_cast<int64_t>(m.header.stamp.sec) * 1'000'000'000 +
@@ -69,7 +74,10 @@ StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool rectified,
     : node_(std::move(node)),
       rectified_(rectified),
       enable_slam_(enable_slam),
-      debug_(debug) {}
+      debug_(debug) {
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, node_);
+}
 
 StereoTracker::~StereoTracker() { shutdown(); }
 
@@ -82,17 +90,6 @@ void StereoTracker::load_config() {
         std::to_string(cams.size()));
   }
   for (auto& cam : cams) {
-    // raw mode tracks the distorted pair and needs the true L<->R rigid
-    // transform from config.yaml; rect mode tracks the device-rectified pair,
-    // whose virtual geometry (shared K, zero distortion, pure-baseline
-    // extrinsic, rectification rotation in .r) comes entirely from the rect
-    // camera_info.
-    if (!rectified_ && !cam.has_stereo_extrinsic) {
-      throw std::runtime_error(
-          "StereoTracker(raw): OAK " + cam.serial_no + " (base/" + cam.key +
-          ") is missing its stereo_extrinsic block (right_from_left) in "
-          "/etc/rena/config.yaml, required for the raw stereo baseline");
-    }
     const std::string ns = "/base/" + cam.key;
     if (rectified_) {
       entries_.push_back(StereoEntry{std::move(cam),
@@ -178,6 +175,23 @@ void StereoTracker::wait_for_camera_info() {
               tag_.c_str());
 }
 
+RigFromCamera StereoTracker::rig_from_camera_from_tf_frame(
+    const sensor_msgs::msg::CameraInfo& info) {
+  geometry_msgs::msg::TransformStamped tf;
+  try {
+    tf = tf_buffer_->lookupTransform(kRigFrame, info.header.frame_id,
+                                     tf2::TimePointZero,
+                                     tf2::durationFromSec(kTfTimeoutS));
+  } catch (const tf2::TransformException& ex) {
+    throw std::runtime_error("no TF " + std::string(kRigFrame) + " -> " +
+                             info.header.frame_id + ": " + ex.what());
+  }
+  const auto& t = tf.transform.translation;
+  const auto& q = tf.transform.rotation;
+  return rig_from_camera_from_tf(Quat{q.x, q.y, q.z, q.w},
+                                 Vec3{t.x, t.y, t.z});
+}
+
 void StereoTracker::build_rig_and_tracker() {
   cuvslam::Rig rig;
   // Rig camera order: [l0, r0, l1, r1, ...]
@@ -186,29 +200,11 @@ void StereoTracker::build_rig_and_tracker() {
     const auto& left_info = camera_infos_[2 * i];
     const auto& right_info = camera_infos_[2 * i + 1];
 
-    const RigFromCamera rfc_phys = rig_from_camera_from_robot_pose(
-        e.roll_deg, e.pitch_deg, e.yaw_deg, e.translation);
-    RigFromCamera rfc_left = rfc_phys;
-    RigFromCamera rfc_right;
-    if (rectified_) {
-      // The rect streams live in the mesh's virtual cameras: the left virtual
-      // camera is the physical left rotated by the rectification rotation
-      // (camera_info.r, x_rect = R * x_cam -> frame axes differ by R^T), and
-      // the right one is a pure baseline translation from it (right P carries
-      // Tx = -fx * B).
-      Mat3 rect_r;
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c) rect_r[r][c] = left_info.r[3 * r + c];
-      const Mat3 r_rig_rect = mat3_mul(quat_to_rotmat(rfc_phys.rotation),
-                                       mat3_transpose(rect_r));
-      rfc_left = RigFromCamera{rotmat_to_quat(r_rig_rect), rfc_phys.translation};
-      const double baseline = -right_info.p[3] / right_info.p[0];
-      rfc_right = rig_from_right_given_left(rfc_left, Quat{0.0, 0.0, 0.0, 1.0},
-                                            Vec3{-baseline, 0.0, 0.0});
-    } else {
-      rfc_right = rig_from_right_given_left(rfc_left, e.right_from_left_rot,
-                                            e.right_from_left_trans);
-    }
+    // TF is the only source of rig placement: the CameraInfo frame_id already
+    // names the frame the stream lives in, so raw and rect resolve to their
+    // own optical frames without a rectification correction here.
+    const RigFromCamera rfc_left = rig_from_camera_from_tf_frame(left_info);
+    const RigFromCamera rfc_right = rig_from_camera_from_tf_frame(right_info);
 
     // Helper to fill a cuvslam::Camera from CameraInfo + rig extrinsic.
     auto make_cam = [this](const sensor_msgs::msg::CameraInfo& info,

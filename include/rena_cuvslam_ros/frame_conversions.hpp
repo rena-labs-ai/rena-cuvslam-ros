@@ -163,6 +163,15 @@ inline RigFromCamera rig_from_camera_from_robot_pose(double roll_deg,
   return RigFromCamera{rotmat_to_quat(r_rig), t_rig};
 }
 
+// Camera pose from TF (rig frame -> camera optical frame) -> rig_from_camera.
+// TF's child frame is already in optical axes, so unlike the config path only
+// the rig side is converted: R_rig = C @ R_tf, t_rig = C @ t_tf.
+inline RigFromCamera rig_from_camera_from_tf(const Quat& q_tf,
+                                             const Vec3& t_tf) {
+  const Mat3 r_rig = mat3_mul(kROptFromRobot, quat_to_rotmat(q_tf));
+  return RigFromCamera{rotmat_to_quat(r_rig), mat3_apply(kROptFromRobot, t_tf)};
+}
+
 // Yaw from a (x, y, z, w) quaternion — used for the planarized TF.
 inline double quat_to_yaw(const Quat& q) {
   const double siny_cosp = 2.0 * (q[3] * q[2] + q[0] * q[1]);

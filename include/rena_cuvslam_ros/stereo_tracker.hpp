@@ -5,8 +5,8 @@
 // /etc/rena/config.yaml, same as RgbdTracker (single or multi-camera).
 //
 // Rig layout per OAK i: [left_i, right_i] → cameras order [l0,r0,l1,r1,...].
-// right_from_left extrinsic comes from stereo_extrinsic in config.yaml
-// (required — it carries the raw stereo baseline).
+// Both camera placements are looked up in TF against the CameraInfo frame_id,
+// so raw and rect streams resolve to their own optical frames.
 //
 // Ingestion uses the same LatestSlot + dedicated track thread split as
 // RgbdTracker so DDS is drained at full camera rate independently of Track().
@@ -25,6 +25,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include "rena_cuvslam_ros/frame_conversions.hpp"
 #include "rena_cuvslam_ros/tracker_common.hpp"
@@ -78,6 +80,8 @@ class StereoTracker {
   void load_config();
   void wait_for_camera_info();
   void build_rig_and_tracker();
+  RigFromCamera rig_from_camera_from_tf_frame(
+      const sensor_msgs::msg::CameraInfo& info);
   void start_streaming();
   void on_stereo2(const ImageMsg::ConstSharedPtr& l0,
                   const ImageMsg::ConstSharedPtr& r0);
@@ -97,6 +101,10 @@ class StereoTracker {
   std::vector<StereoEntry> entries_;
   // 2 per OAK: camera_infos_[2*i] = left, camera_infos_[2*i+1] = right.
   std::vector<sensor_msgs::msg::CameraInfo> camera_infos_;
+
+  // Rig placement comes from TF, so the same source rtabmap's adapter reads.
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   std::unique_ptr<cuvslam::Odometry> odom_;
   std::unique_ptr<cuvslam::Slam> slam_;

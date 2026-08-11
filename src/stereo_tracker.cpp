@@ -65,8 +65,11 @@ bool fill_mono_image(cuvslam::Image& img, const sensor_msgs::msg::Image& msg,
 // ------------------------------- StereoTracker ------------------------------
 
 StereoTracker::StereoTracker(rclcpp::Node::SharedPtr node, bool rectified,
-                             bool debug)
-    : node_(std::move(node)), rectified_(rectified), debug_(debug) {}
+                             bool enable_slam, bool debug)
+    : node_(std::move(node)),
+      rectified_(rectified),
+      enable_slam_(enable_slam),
+      debug_(debug) {}
 
 StereoTracker::~StereoTracker() { shutdown(); }
 
@@ -283,15 +286,17 @@ void StereoTracker::build_rig_and_tracker() {
 
   odom_ = std::make_unique<cuvslam::Odometry>(rig, ocfg);
 
-  // ---- SLAM config ----
-  cuvslam::Slam::Config scfg;
-  scfg.sync_mode = false;
-  scfg.planar_constraints = true;
-  slam_ = std::make_unique<cuvslam::Slam>(rig, odom_->GetPrimaryCameras(), scfg);
+  if (enable_slam_) {
+    cuvslam::Slam::Config scfg;
+    scfg.sync_mode = false;
+    scfg.planar_constraints = true;
+    slam_ = std::make_unique<cuvslam::Slam>(rig, odom_->GetPrimaryCameras(), scfg);
+  }
 
   RCLCPP_INFO(node_->get_logger(),
-              "[%s] cuVSLAM Odometry+Slam created (%zu OAKs, %zu stereo cameras)",
-              tag_.c_str(), entries_.size(), rig.cameras.size());
+              "[%s] cuVSLAM Odometry%s created (%zu OAKs, %zu stereo cameras)",
+              tag_.c_str(), enable_slam_ ? "+Slam" : " (VO only)",
+              entries_.size(), rig.cameras.size());
 }
 
 void StereoTracker::start_streaming() {
@@ -407,10 +412,15 @@ void StereoTracker::track_loop() {
     try {
       pe = odom_->Track(images, {}, {});
       if (pe.world_from_rig.has_value()) {
-        cuvslam::Odometry::State state;
-        odom_->GetState(state);
-        slam_->Track(state);
-        slam_pose = slam_->GetPose();
+        if (slam_) {
+          cuvslam::Odometry::State state;
+          odom_->GetState(state);
+          slam_->Track(state);
+          slam_pose = slam_->GetPose();
+        } else {
+          // VO-only: the backend correction publishes as identity.
+          slam_pose = pe.world_from_rig->pose;
+        }
         have_slam = true;
       }
     } catch (const std::exception& ex) {

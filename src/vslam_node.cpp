@@ -33,6 +33,7 @@ class VslamNode : public rclcpp::Node {
     child_frame_ = declare_parameter<std::string>("odom_child_frame", "base_nav_link");
     planarize_ = declare_parameter<bool>("planarize", true);
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
+    enable_slam_ = declare_parameter<bool>("enable_slam", true);
     debug_ = declare_parameter<bool>("debug", false);
     depth_scale_ = declare_parameter<double>("depth_scale", 0.001);
     declare_parameter<std::string>("tracker", "rgbd");
@@ -55,8 +56,8 @@ class VslamNode : public rclcpp::Node {
     }
     if (tracker == "stereo") {
       const std::string input = get_parameter("stereo_input").as_string();
-      stereo_tracker_ = std::make_unique<StereoTracker>(shared_from_this(),
-                                                        input == "rect", debug_);
+      stereo_tracker_ = std::make_unique<StereoTracker>(
+          shared_from_this(), input == "rect", enable_slam_, debug_);
       stereo_tracker_->set_result_callback(
           [this](int64_t ts, const RosPose& vo, const RosPose& slam) {
             publish(ts, vo, slam);
@@ -155,6 +156,7 @@ class VslamNode : public rclcpp::Node {
 
   std::string child_frame_;
   std::string map_frame_;
+  bool enable_slam_ = true;
   bool planarize_ = true;
   bool debug_ = false;
   double depth_scale_ = 0.001;
